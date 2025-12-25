@@ -87,6 +87,9 @@ pub enum TokenType {
     Constant(ConstantType),
     Operator(OperatorType),
     Separator(SeparatorType),
+    //以下在lexer中用不到
+    Expression,
+    TypeKeyword,
 }
 impl Display for TokenType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

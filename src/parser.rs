@@ -1,7 +1,7 @@
 use core::slice;
 use std::{collections::{self, BTreeMap, HashMap}, fmt::Debug, iter::Peekable, sync::{Arc, LazyLock, Mutex}, vec};
 
-use crate::lexer::{self, ConstantType, OperatorType, Token, TokenType};
+use crate::lexer::{self, ConstantType, KeywordType, OperatorType, SeparatorType, Token, TokenType};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum ExprNodeType{
@@ -108,6 +108,7 @@ static PRECEDENCES:LazyLock<BTreeMap<TokenType,usize>>=LazyLock::new(||{BTreeMap
     (TokenType::Operator(OperatorType::Divide),130),
 ])});
 type PrefixHandler=fn(&Token,&mut Peekable<slice::Iter<Token>>)->ExprNode;
+type InfixHandler=fn(ExprNode, &mut Peekable<slice::Iter<Token>>)->ExprNode;
 static PREFIX_HANDLERS:LazyLock<BTreeMap<TokenType, PrefixHandler>>=LazyLock::new(|| 
     BTreeMap::from([
     (TokenType::Identifier, ExprNode::value_node as PrefixHandler),
@@ -115,7 +116,6 @@ static PREFIX_HANDLERS:LazyLock<BTreeMap<TokenType, PrefixHandler>>=LazyLock::ne
     (TokenType::Operator(OperatorType::Minus), ExprNode::minus_node),
 
 ]));
-type InfixHandler=fn(ExprNode, &mut Peekable<slice::Iter<Token>>)->ExprNode;
 static INFIX_HANDLERS:LazyLock<BTreeMap<TokenType,InfixHandler>>=LazyLock::new(
     || 
         BTreeMap::from([
@@ -126,6 +126,7 @@ static INFIX_HANDLERS:LazyLock<BTreeMap<TokenType,InfixHandler>>=LazyLock::new(
         ])
     
 );
+/// scan an expression using Pratt Parsing algorithm.
 fn scan_expr(tokens:&mut Peekable<slice::Iter<Token>>,precedence:usize)->Option<ExprNode>{
     //consume one token
     let lefttoken=tokens.next();
@@ -167,7 +168,71 @@ fn scan_expr(tokens:&mut Peekable<slice::Iter<Token>>,precedence:usize)->Option<
     }
     Some(left)
 }
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum StatementType {
+    Definition,
+    Assign,
+    SingleExpr
+}
+#[derive(Clone, Debug)]
+struct StatementNode{
+    stmttype:StatementType,
+    typekw:Token,
+    id:Token,
+    expr:ExprNode
+}
+impl StatementNode {
+    pub const fn new(stmttype:StatementType,typekw:Token,id:Token,expr:ExprNode)->Self{
+        Self{
+            stmttype,
+            typekw,
+            id,
+            expr
+        }
+    }
+}
+static STATEMENT_FORMULAE:LazyLock<Vec<Vec<TokenType>>>=LazyLock::new(|| vec![
+    //define
+    // type id = expr ;
+    vec![TokenType::TypeKeyword,TokenType::Identifier,
+    TokenType::Operator(OperatorType::Assign),TokenType::Expression,
+    TokenType::Separator(SeparatorType::Semicolon)],
+    // assign
+    // id = expr ;
+    vec![TokenType::Identifier,
+    TokenType::Operator(OperatorType::Assign),TokenType::Expression,
+    TokenType::Separator(SeparatorType::Semicolon)],
+    // single expr
+    // expr;
+    vec![TokenType::Expression, TokenType::Separator(SeparatorType::Semicolon)],
 
+]);
+/// scan a specific type of token from the tokens.
+fn scan_token(toktype:TokenType, tokens:&mut Peekable<slice::Iter<Token>>)->Option<&Token>{
+    if let Some(tok) = tokens.peek() {
+        if tok.kind==toktype {
+            return tokens.next();
+        }
+    }
+    None
+}
+fn scan_stmt(tokens:&mut Peekable<slice::Iter<Token>>)->Option<StatementNode> {
+    //1. define
+    // backup the iter in case the scanning fails
+    let mut backupiter=tokens.clone();
+    let typekw=scan_token(TokenType::Keyword(KeywordType::Int), &mut backupiter);
+    let id=scan_token(TokenType::Identifier, &mut backupiter);
+    let eqop=scan_token(TokenType::Operator(OperatorType::Equal), &mut backupiter);
+    let rexpr=scan_expr(&mut backupiter, 0);
+    let ending=scan_token(TokenType::Separator(SeparatorType::Semicolon), &mut backupiter);
+    if typekw.is_some()&&id.is_some()&&eqop.is_some()&&rexpr.is_some()&&ending.is_some() {
+        *tokens=backupiter;
+        return Some(StatementNode::new(StatementType::Definition, typekw.unwrap().clone(), id.unwrap().clone(), rexpr.unwrap().clone()));
+    }
+
+    //
+    None
+}
 #[test]
 fn test_expr_scanner(){
     let rawexprstr="b+a*c-1";
