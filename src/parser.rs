@@ -103,9 +103,9 @@ impl ExprNode {
 static PRECEDENCES:LazyLock<BTreeMap<TokenType,usize>>=LazyLock::new(||{BTreeMap::from([
     (TokenType::Operator(OperatorType::Plus),120),
     (TokenType::Operator(OperatorType::Minus),120),
-    (TokenType::Operator(OperatorType::Comma),100),
     (TokenType::Operator(OperatorType::Multiply),130),
     (TokenType::Operator(OperatorType::Divide),130),
+    (TokenType::Separator(SeparatorType::Comma),100),
     (TokenType::Separator(SeparatorType::Semicolon),0)
 ])});
 type PrefixHandler=fn(&Token,&mut Peekable<slice::Iter<Token>>)->ExprNode;
@@ -319,7 +319,7 @@ fn scan_func(tokens:&mut Peekable<slice::Iter<Token>>)->Option<FunctionNode>{
             break;
         }
         params.push((paramid.unwrap(), paramtype.unwrap()));
-        let comma=scan_token(TokenType::Operator(OperatorType::Comma), &mut backupiter);
+        let comma=scan_token(TokenType::Separator(SeparatorType::Comma), &mut backupiter);
         if comma.is_none() {
             break;
         }

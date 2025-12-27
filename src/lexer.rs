@@ -1,14 +1,18 @@
-use std::{cmp, fmt::{Debug, Display}, vec::Vec};
+use std::{cmp, collections::BTreeMap, fmt::{Debug, Display}, sync::LazyLock, vec::Vec};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd ,Ord)]
 pub enum SeparatorType {
     Semicolon,
     Colon,
     Comma,
+    Quote,
+    DoubleQuote,
+    //code block
     OpenParen,//左小括号
     CloseParen,//右小括号
     OpenBrace,
     CloseBrace,
+    // whitespaces
     Space,
     SlashN,
     Tab,
@@ -22,19 +26,21 @@ pub enum OperatorType {
     Multiply,
     Divide,
     Assign,
+    Mod,
     //比较
     Equal,
     NotEqual,
     Greater,
     Less,
     GreaterEqual,
-    LessEqual,
-    //分割
-    Comma
+    LessEqual
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd ,Ord)]
 pub enum KeywordType {
+    //types
     Int,
+    //controls
+    Let,
     Return,
     If,
     Else,
@@ -44,44 +50,55 @@ pub enum KeywordType {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd ,Ord)]
 pub enum ConstantType {
-    Integer
+    Integer,
+    Float,
+    String
 }
-static KEYWORDS: [(KeywordType,&str);7] = [
-    (KeywordType::Int, "int"),
-    (KeywordType::Return, "return"),
-    (KeywordType::If, "if"),
-    (KeywordType::Else, "else"),
-    (KeywordType::While, "while"),
-    (KeywordType::For, "for"),
-    (KeywordType::Fn, "fn")
-];
-static OPERATORS: [(OperatorType,&str);12] = [
-    (OperatorType::Plus, "+"),
-    (OperatorType::Minus, "-"),
-    (OperatorType::Multiply, "*"),
-    (OperatorType::Divide, "/"),
-    (OperatorType::Assign, "="),
-    (OperatorType::Equal, "=="),
-    (OperatorType::NotEqual, "!="),
-    (OperatorType::Greater, ">"),
-    (OperatorType::Less, "<"),
-    (OperatorType::GreaterEqual, ">="),
-    (OperatorType::LessEqual, "<="),
-    (OperatorType::Comma, ",")
-];
-static SEPARATORS: [(SeparatorType,&str);11] = [
-    (SeparatorType::Semicolon, ";"),
-    (SeparatorType::Colon, ":"),
-    (SeparatorType::Comma, ","),
-    (SeparatorType::OpenParen, "("),
-    (SeparatorType::CloseParen, ")"),
-    (SeparatorType::OpenBrace, "{"),
-    (SeparatorType::CloseBrace, "}"),
-    (SeparatorType::Space, " "),
-    (SeparatorType::SlashN, "\n"),
-    (SeparatorType::Tab, "\t"),
-    (SeparatorType::CarriageReturn, "\r"),
-];
+static KEYWORDS: LazyLock<BTreeMap<KeywordType,&str>> = LazyLock::new(|| {
+    let mut m = BTreeMap::new();
+    m.insert(KeywordType::Int, "int");
+    m.insert(KeywordType::Let, "let");
+    m.insert(KeywordType::Return, "return");
+    m.insert(KeywordType::If, "if");
+    m.insert(KeywordType::Else, "else");
+    m.insert(KeywordType::While, "while");
+    m.insert(KeywordType::For, "for");
+    m.insert(KeywordType::Fn, "fn");
+    m
+});
+static OPERATORS: LazyLock<BTreeMap<OperatorType,&str>> = LazyLock::new(|| {
+    let mut m = BTreeMap::new();
+    m.insert(OperatorType::Plus, "+");
+    m.insert(OperatorType::Minus, "-");
+    m.insert(OperatorType::Multiply, "*");
+    m.insert(OperatorType::Divide, "/");
+    m.insert(OperatorType::Assign, "=");
+    m.insert(OperatorType::Equal, "==");
+    m.insert(OperatorType::NotEqual, "!=");
+    m.insert(OperatorType::Greater, ">");
+    m.insert(OperatorType::Less, "<");
+    m.insert(OperatorType::GreaterEqual, ">=");
+    m.insert(OperatorType::LessEqual, "<=");
+    m.insert(OperatorType::Mod, "%");
+    m
+});
+static SEPARATORS: LazyLock<BTreeMap<SeparatorType,&str>> = LazyLock::new(|| {
+    let mut m = BTreeMap::new();
+    m.insert(SeparatorType::Semicolon, ";");
+    m.insert(SeparatorType::Colon, ":");
+    m.insert(SeparatorType::Comma, ",");
+    m.insert(SeparatorType::Quote, "\'");
+    m.insert(SeparatorType::DoubleQuote, "\"");
+    m.insert(SeparatorType::OpenParen, "(");
+    m.insert(SeparatorType::CloseParen, ")");
+    m.insert(SeparatorType::OpenBrace, "{");
+    m.insert(SeparatorType::CloseBrace, "}");
+    m.insert(SeparatorType::Space, " ");
+    m.insert(SeparatorType::SlashN, "\n");
+    m.insert(SeparatorType::Tab, "\t");
+    m.insert(SeparatorType::CarriageReturn, "\r");
+    m
+});
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd ,Ord)]
 pub enum TokenType {
     Keyword(KeywordType),
@@ -120,8 +137,8 @@ impl Token {
 //在扫描中，一个种类允许出现的字符集合
 static LETTERS_ALLOWED: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_";
 static DIGITS_ALLOWED: &str = "0123456789";
-static OPERATORS_ALLOWED: &str = "+-*/=<>!";
-static SEPARATORS_ALLOWED: &str = ":;,(){} \n\t\r";
+static OPERATORS_ALLOWED: &str = "+-*/=<>!%";
+static SEPARATORS_ALLOWED: &str = ":;,(){} \n\t\r\'\"";
 /// 扫描字符串开头连续的allowed字符，返回扫描到的字符数
 /// # Arguments
 /// * `toscan` - 要扫描的字符串
@@ -167,7 +184,7 @@ pub fn do_lex(rawstr:&str)->Vec<Token>{
             let word=&rawstr[startptr..startptr+wordlen];
             //检查是否是关键字
             if let Some((kwenum, kwstr)) = KEYWORDS.iter().find(|(kwenum,kwstr)| {
-                *kwstr==word
+                **kwstr==word
             }) {
                 //是关键字
                 tokens.push(Token::new(TokenType::Keyword(*kwenum), kwstr));
@@ -189,7 +206,7 @@ pub fn do_lex(rawstr:&str)->Vec<Token>{
             let word=&rawstr[startptr..startptr+wordlen];
             //检查是哪种操作符
             if let Some((openum, opstr)) = OPERATORS.iter().find(|(openum,opstr)| {
-                *opstr==word
+                **opstr==word
             }) {
                 tokens.push(Token::new(TokenType::Operator(*openum), opstr));
             }else {
@@ -203,7 +220,7 @@ pub fn do_lex(rawstr:&str)->Vec<Token>{
             let word=&rawstr[startptr..startptr+wordlen];
             //检查是哪种分隔符
             if let Some((sepenum, sepstr)) = SEPARATORS.iter().find(|(sepenum,sepstr)| {
-                *sepstr==word
+                **sepstr==word
             }) {
                 tokens.push(Token::new(TokenType::Separator(*sepenum), sepstr));
             }else {
@@ -235,4 +252,34 @@ pub fn do_lex(rawstr:&str)->Vec<Token>{
         println!("{:?}", token);
     }
     tokens_no_whitespace
+}
+
+#[test]
+fn test_lexer(){
+    let source="
+    fn foo(a:int,b:int):int{
+        let c=a-b;
+        if(c>=0){
+            return a+b;
+        }else if(a>0){
+            return a*b;
+        }else{
+            return a/b;
+        }
+        return a-b;
+    }
+    fn main():int {
+        let a=1;
+        let b=2;
+        let c=a+b;
+        c=a+(b*3-c/6)%2;
+        let d=foo(a,b);
+        return d;
+    }
+    ";
+    let tokens=do_lex(source);
+    println!("Final Tokens:");
+    for token in tokens.iter() {
+        println!("{:?}", token);
+    }
 }
