@@ -136,6 +136,9 @@ fn scan_expr(tokens:&mut Peekable<slice::Iter<Token>>,precedence:usize)->Option<
     }
     let lefttoken=lefttoken.unwrap();
     //get the left node by calling the handler of this kind of token
+    if PREFIX_HANDLERS.iter().find(|(toktype,handler)| *toktype==&lefttoken.kind).is_none() {
+        return None;
+    }
     let mut left=PREFIX_HANDLERS[&lefttoken.kind](lefttoken, tokens);
     if cfg!(test) {
         println!("taking left token {:?} to make prefix node {:?}",lefttoken,left);
@@ -149,6 +152,11 @@ fn scan_expr(tokens:&mut Peekable<slice::Iter<Token>>,precedence:usize)->Option<
         }.clone();
         if cfg!(test) {
             println!("peeking token {:?}",righttoken);
+        }
+        if PRECEDENCES.iter().find(|(toktyp,_)| *toktyp==&righttoken.kind).is_none() {
+            // not an infix operator
+            println!("scan_expr met an unknown infix token {:?}",righttoken);
+            return None;
         }
         // if the precedence of the new token is higher than ours, take it.
         if PRECEDENCES[&righttoken.kind]<=precedence {
@@ -189,6 +197,38 @@ impl StatementNode {
             typekw,
             id,
             expr
+        }
+    }
+}
+#[derive(Clone)]
+struct FunctionNode{
+    fnkw:Token,
+    id:Token,
+    returntypekw:Token,
+    params:Vec<(Token,Token)>,// (param id, param type)
+    stmts:Vec<StatementNode>
+}
+impl Debug for FunctionNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&format!("====FunctionNode===\n{} {}(",self.fnkw.value, self.id.value))?;
+        for (id,typ) in self.params.iter() {
+            f.write_str(&format!("{}:{}, ",id.value, typ.value))?;
+        }
+        f.write_str(&format!("):{}{{\n",self.returntypekw.value))?;
+        for stmt in self.stmts.iter() {
+            f.write_str(&format!("{:?}\n",stmt))?;
+        }
+        f.write_str("}\n================\n")
+    }
+}
+impl FunctionNode {
+    pub fn new(fnkw:Token, id:Token, returntypekw:Token, params:Vec<(Token,Token)>, stmts:Vec<StatementNode>)->Self{
+        Self{
+            fnkw,
+            id,
+            returntypekw,
+            params,
+            stmts
         }
     }
 }
@@ -239,6 +279,87 @@ fn scan_stmt(tokens:&mut Peekable<slice::Iter<Token>>)->Option<StatementNode> {
         return Some(StatementNode::new(StatementType::SingleExpr, Token::new(TokenType::Keyword(KeywordType::Int), ""), Token::new(TokenType::Identifier, ""), rexpr.unwrap()));
     }
     None
+}
+/// scan a function from the tokens.
+fn scan_func(tokens:&mut Peekable<slice::Iter<Token>>)->Option<FunctionNode>{
+    /*
+    function:
+    fn id (id:typekw,...):typekw {
+        stmt;
+        ...
+    }
+    */
+    let mut backupiter=tokens.clone();
+    let fnkw=scan_token(TokenType::Keyword(KeywordType::Fn), &mut backupiter);
+    let id=scan_token(TokenType::Identifier, &mut backupiter);
+    let openparen=scan_token(TokenType::Separator(SeparatorType::OpenParen), &mut backupiter);
+    // checkpoint
+    if fnkw.is_none()||id.is_none()||openparen.is_none() {
+        return None;
+    }
+    let mut params:Vec<(Token,Token)>=Vec::new();
+    // scan the param list
+    loop {
+        let paramid=scan_token(TokenType::Identifier, &mut backupiter);
+        let colonsep=scan_token(TokenType::Separator(SeparatorType::Colon), &mut backupiter);
+        let paramtype=scan_token(TokenType::Keyword(KeywordType::Int), &mut backupiter);
+        if paramid.is_none()||colonsep.is_none()||paramtype.is_none() {
+            break;
+        }
+        params.push((paramid.unwrap(), paramtype.unwrap()));
+        let comma=scan_token(TokenType::Operator(OperatorType::Comma), &mut backupiter);
+        if comma.is_none() {
+            break;
+        }
+    }
+    let closeparentok=scan_token(TokenType::Separator(SeparatorType::CloseParen), &mut backupiter);
+    let colontok=scan_token(TokenType::Separator(SeparatorType::Colon), &mut backupiter);
+    let returntypekw=scan_token(TokenType::Keyword(KeywordType::Int), &mut backupiter);
+    let openbracetok=scan_token(TokenType::Separator(SeparatorType::OpenBrace), &mut backupiter);
+    //checkpoint
+    if closeparentok.is_none()||colontok.is_none()||returntypekw.is_none()||openbracetok.is_none() {
+        return None;
+    }
+    // scan the stmts
+    let mut stmts:Vec<StatementNode>=Vec::new();
+    loop {
+        let stmt=scan_stmt(&mut backupiter);
+        if stmt.is_none() {
+            break;
+        }
+        stmts.push(stmt.unwrap());
+    }
+    let closebracetok=scan_token(TokenType::Separator(SeparatorType::CloseBrace), &mut backupiter);
+    // last we check the closing brace
+    if closebracetok.is_none() {
+        return None;
+    }
+    *tokens=backupiter;
+    Some(FunctionNode::new(fnkw.unwrap(), id.unwrap(), returntypekw.unwrap(), params, stmts))
+}
+#[test]
+fn test_func_scanner(){
+    let rawfuncstr="fn main():int {
+        int a=1;
+        int b=2;
+        int c=3;
+        c=a+b;
+        a;
+    }";
+    println!("Function Tokens:");
+    let tokens=lexer::do_lex(rawfuncstr);
+    // let tokens=vec![Token::new(TokenType::Identifier, "a"),
+    // Token::new(TokenType::Operator(OperatorType::Plus), "+"),
+    // Token::new(TokenType::Identifier, "b")];
+    let mut tokiter=tokens.iter().peekable();
+    let func=scan_func(&mut tokiter);
+    if let Some(funcnode) = func {
+        println!("{:?}",funcnode);
+        assert!(true);
+    }else {
+        println!("func scanning failed");
+        assert!(false);
+    }
 }
 #[test]
 fn test_stmt_scanner(){

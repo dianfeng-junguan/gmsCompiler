@@ -3,6 +3,7 @@ use std::{cmp, fmt::{Debug, Display}, vec::Vec};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd ,Ord)]
 pub enum SeparatorType {
     Semicolon,
+    Colon,
     Comma,
     OpenParen,//左小括号
     CloseParen,//右小括号
@@ -68,8 +69,9 @@ static OPERATORS: [(OperatorType,&str);12] = [
     (OperatorType::LessEqual, "<="),
     (OperatorType::Comma, ",")
 ];
-static SEPARATORS: [(SeparatorType,&str);10] = [
+static SEPARATORS: [(SeparatorType,&str);11] = [
     (SeparatorType::Semicolon, ";"),
+    (SeparatorType::Colon, ":"),
     (SeparatorType::Comma, ","),
     (SeparatorType::OpenParen, "("),
     (SeparatorType::CloseParen, ")"),
@@ -119,7 +121,7 @@ impl Token {
 static LETTERS_ALLOWED: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_";
 static DIGITS_ALLOWED: &str = "0123456789";
 static OPERATORS_ALLOWED: &str = "+-*/=<>!";
-static SEPARATORS_ALLOWED: &str = ";,(){} \n\t\r";
+static SEPARATORS_ALLOWED: &str = ":;,(){} \n\t\r";
 /// 扫描字符串开头连续的allowed字符，返回扫描到的字符数
 /// # Arguments
 /// * `toscan` - 要扫描的字符串
@@ -209,6 +211,9 @@ pub fn do_lex(rawstr:&str)->Vec<Token>{
             }
             startptr+=wordlen;
             pioneerptr=startptr;
+        }else {
+            // met unrecognized character
+            panic!("Unrecognized character: {}", firstchar);
         }
     }
     println!("Tokens:");
