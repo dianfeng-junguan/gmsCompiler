@@ -106,6 +106,7 @@ static PRECEDENCES:LazyLock<BTreeMap<TokenType,usize>>=LazyLock::new(||{BTreeMap
     (TokenType::Operator(OperatorType::Comma),100),
     (TokenType::Operator(OperatorType::Multiply),130),
     (TokenType::Operator(OperatorType::Divide),130),
+    (TokenType::Separator(SeparatorType::Semicolon),0)
 ])});
 type PrefixHandler=fn(&Token,&mut Peekable<slice::Iter<Token>>)->ExprNode;
 type InfixHandler=fn(ExprNode, &mut Peekable<slice::Iter<Token>>)->ExprNode;
@@ -150,7 +151,7 @@ fn scan_expr(tokens:&mut Peekable<slice::Iter<Token>>,precedence:usize)->Option<
             println!("peeking token {:?}",righttoken);
         }
         // if the precedence of the new token is higher than ours, take it.
-        if PRECEDENCES[&righttoken.kind]<precedence {
+        if PRECEDENCES[&righttoken.kind]<=precedence {
             // precedence lower than us. dont take it
             if cfg!(test) {
                 println!("precedence too low. abandon.");
@@ -191,47 +192,71 @@ impl StatementNode {
         }
     }
 }
-static STATEMENT_FORMULAE:LazyLock<Vec<Vec<TokenType>>>=LazyLock::new(|| vec![
-    //define
-    // type id = expr ;
-    vec![TokenType::TypeKeyword,TokenType::Identifier,
-    TokenType::Operator(OperatorType::Assign),TokenType::Expression,
-    TokenType::Separator(SeparatorType::Semicolon)],
-    // assign
-    // id = expr ;
-    vec![TokenType::Identifier,
-    TokenType::Operator(OperatorType::Assign),TokenType::Expression,
-    TokenType::Separator(SeparatorType::Semicolon)],
-    // single expr
-    // expr;
-    vec![TokenType::Expression, TokenType::Separator(SeparatorType::Semicolon)],
-
-]);
 /// scan a specific type of token from the tokens.
-fn scan_token(toktype:TokenType, tokens:&mut Peekable<slice::Iter<Token>>)->Option<&Token>{
+fn scan_token(toktype:TokenType, tokens:&mut Peekable<slice::Iter<Token>>)->Option<Token>{
     if let Some(tok) = tokens.peek() {
+        if cfg!(test) {
+            println!("peeking token {:?}, token type {}, required {}",tok, tok.kind, toktype);
+        }
         if tok.kind==toktype {
-            return tokens.next();
+            return tokens.next().cloned();
         }
     }
     None
 }
+/// scan a statement from the tokens.
 fn scan_stmt(tokens:&mut Peekable<slice::Iter<Token>>)->Option<StatementNode> {
     //1. define
     // backup the iter in case the scanning fails
     let mut backupiter=tokens.clone();
     let typekw=scan_token(TokenType::Keyword(KeywordType::Int), &mut backupiter);
     let id=scan_token(TokenType::Identifier, &mut backupiter);
-    let eqop=scan_token(TokenType::Operator(OperatorType::Equal), &mut backupiter);
+    let eqop=scan_token(TokenType::Operator(OperatorType::Assign), &mut backupiter);
     let rexpr=scan_expr(&mut backupiter, 0);
     let ending=scan_token(TokenType::Separator(SeparatorType::Semicolon), &mut backupiter);
     if typekw.is_some()&&id.is_some()&&eqop.is_some()&&rexpr.is_some()&&ending.is_some() {
         *tokens=backupiter;
-        return Some(StatementNode::new(StatementType::Definition, typekw.unwrap().clone(), id.unwrap().clone(), rexpr.unwrap().clone()));
+        return Some(StatementNode::new(StatementType::Definition, typekw.unwrap(), id.unwrap(), rexpr.unwrap()));
     }
 
-    //
+    //2. assign
+    let mut backupiter=tokens.clone();
+    let id=scan_token(TokenType::Identifier, &mut backupiter);
+    let eqop=scan_token(TokenType::Operator(OperatorType::Assign), &mut backupiter);
+    let rexpr=scan_expr(&mut backupiter, 0);
+    let ending=scan_token(TokenType::Separator(SeparatorType::Semicolon), &mut backupiter);
+    if id.is_some()&&eqop.is_some()&&rexpr.is_some()&&ending.is_some() {
+        *tokens=backupiter;
+        return Some(StatementNode::new(StatementType::Assign, Token::new(TokenType::Keyword(KeywordType::Int), ""), id.unwrap(), rexpr.unwrap()));
+    }
+
+    //3. single expr
+    let mut backupiter=tokens.clone();
+    let rexpr=scan_expr(&mut backupiter, 0);
+    let ending=scan_token(TokenType::Separator(SeparatorType::Semicolon), &mut backupiter);
+    if rexpr.is_some()&&ending.is_some() {
+        *tokens=backupiter;
+        return Some(StatementNode::new(StatementType::SingleExpr, Token::new(TokenType::Keyword(KeywordType::Int), ""), Token::new(TokenType::Identifier, ""), rexpr.unwrap()));
+    }
     None
+}
+#[test]
+fn test_stmt_scanner(){
+    let rawstmtstr="int a = b + c * 2;";
+    println!("Statement Tokens:");
+    let tokens=lexer::do_lex(rawstmtstr);
+    // let tokens=vec![Token::new(TokenType::Identifier, "a"),
+    // Token::new(TokenType::Operator(OperatorType::Plus), "+"),
+    // Token::new(TokenType::Identifier, "b")];
+    let mut tokiter=tokens.iter().peekable();
+    let stmt=scan_stmt(&mut tokiter);
+    if let Some(stmtnode) = stmt {
+        println!("{:?}",stmtnode);
+        assert!(true);
+    }else {
+        println!("stmt scanning failed");
+        assert!(false);
+    }
 }
 #[test]
 fn test_expr_scanner(){
