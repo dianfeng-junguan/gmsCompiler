@@ -60,6 +60,21 @@ impl ExprNode {
             right: None,
         }
     }
+
+    pub fn left_paren_prefix(token:&Token, tokens:&mut Peekable<slice::Iter<Token>>)->Self{
+        // scan the expr inside the paren
+        let exprnode=scan_expr(tokens, 0).unwrap();
+        // expect a closing paren
+        let closeparen=scan_token(TokenType::Separator(SeparatorType::CloseParen), tokens);
+        if closeparen.is_none() {
+            panic!("syntax error: missing closing parenthesis");
+        }
+        exprnode
+    }
+
+    pub fn right_paren_prefix(token:&Token, tokens:&mut Peekable<slice::Iter<Token>>)->Self{
+        panic!("syntax error: unexpected closing parenthesis");
+    }
     // infix handlers
     pub fn add_node(left:ExprNode, tokens:&mut Peekable<slice::Iter<Token>>)->Self{
         Self{
@@ -99,12 +114,78 @@ impl ExprNode {
             .map_or_else(|| None, |v| Some(Box::new(v))),
         }
     }
+
+    pub fn left_paren_infix(left:ExprNode, tokens:&mut Peekable<slice::Iter<Token>>)->Self{
+        // function call
+        // scan the argument list inside the paren
+        // comma list
+        let args=scan_expr(tokens, 0).unwrap();
+        // expect a closing paren
+        let closeparen=scan_token(TokenType::Separator(SeparatorType::CloseParen), tokens);
+        if closeparen.is_none() {
+            panic!("syntax error: missing closing parenthesis in function call");
+        }
+        Self{
+            nodetype: ExprNodeType::FUNCCALL,
+            left: Some(Box::new(left)),
+            value: None,
+            right: Some(Box::new(args)),
+        }
+    }
+
+    pub fn right_paren_infix(left:ExprNode, tokens:&mut Peekable<slice::Iter<Token>>)->Self{
+        panic!("syntax error: unexpected closing parenthesis in infix position");
+    }
 }
+/*
+    some explanation:
+    parensis
+    prefix handler:
+    left paren:
+    when a parensis prefix handler is called, it means it follows an operator or it is the first token in an expr.
+    because an operator's infix handler will call scan_expr to get its right operand
+    and the parensis is fetched as the left token in scan_expr, then called the parensis prefix handler
+    so we need to scan the expr inside the parensis, and then expect a closing parensis.
+    finally return the expr node inside the parensis as the result of this prefix handler and drop the paren pair.
+    
+    right paren:
+    the right paren is supposed to be handled and dropped by the hanlders of the left paren.
+    if the prefix handler of the right paren is called, it means there is a syntax error in the source code.
+
+    infix handler:
+    left paren:
+    when a parensis infix handler is called, it means it follows an identifier or constant.
+    in this case, the paren is the start of a function call.
+    so we need to scan the argument list inside the parensis, and then expect a closing parensis.
+    finally return a FUNCCALL expr node with the function name as left child and the argument list as right child.
+
+    right paren:
+    the right paren is supposed to be handled and dropped by the hanlders of the left paren.
+    if the infix handler of the right paren is called, it means there is a syntax error in the source code.
+
+    precedence:
+    the opening paren should have a very high precedence to ensure it is always taken when seen.
+    yet the closing paren should have a very low precedence to ensure it is never taken as an infix operator.
+
+    comma
+    prefix_handler:
+    the comma is not supposed to be handled in prefix position.
+    
+    infix_handler:
+    the comma is used to separate expressions in a comma list.
+    the comma list can be either a function argument list or simply a comma separated expression list in a bigger expression.
+    the value of such expression is defined here the value of the rightmost expr-just like c.
+
+    precedence:
+    the comma should have a low precedence to ensure it is not taken when dealing with other operators.
+*/
 static PRECEDENCES:LazyLock<BTreeMap<TokenType,usize>>=LazyLock::new(||{BTreeMap::from([
     (TokenType::Operator(OperatorType::Plus),120),
     (TokenType::Operator(OperatorType::Minus),120),
     (TokenType::Operator(OperatorType::Multiply),130),
     (TokenType::Operator(OperatorType::Divide),130),
+    (TokenType::Separator(SeparatorType::OpenParen),1000),
+    (TokenType::Separator(SeparatorType::CloseParen),0),
     (TokenType::Separator(SeparatorType::Comma),100),
     (TokenType::Separator(SeparatorType::Semicolon),0)
 ])});
@@ -112,9 +193,17 @@ type PrefixHandler=fn(&Token,&mut Peekable<slice::Iter<Token>>)->ExprNode;
 type InfixHandler=fn(ExprNode, &mut Peekable<slice::Iter<Token>>)->ExprNode;
 static PREFIX_HANDLERS:LazyLock<BTreeMap<TokenType, PrefixHandler>>=LazyLock::new(|| 
     BTreeMap::from([
+    //TODO need to recognize whether is a id or a func call
     (TokenType::Identifier, ExprNode::value_node as PrefixHandler),
     (TokenType::Constant(ConstantType::Integer), ExprNode::value_node),
+    (TokenType::Constant(ConstantType::Float), ExprNode::value_node),
+    (TokenType::Constant(ConstantType::String), ExprNode::value_node),
     (TokenType::Operator(OperatorType::Minus), ExprNode::minus_node),
+    (TokenType::Separator(SeparatorType::OpenParen), ExprNode::left_paren_prefix),
+    (TokenType::Separator(SeparatorType::CloseParen), ExprNode::right_paren_prefix),
+    (TokenType::Separator(SeparatorType::Comma), |token, tokiter|{
+        panic!("syntax error: unexpected comma in prefix position");
+    })
 
 ]));
 static INFIX_HANDLERS:LazyLock<BTreeMap<TokenType,InfixHandler>>=LazyLock::new(
@@ -124,6 +213,17 @@ static INFIX_HANDLERS:LazyLock<BTreeMap<TokenType,InfixHandler>>=LazyLock::new(
             (TokenType::Operator(OperatorType::Minus), ExprNode::sub_node as InfixHandler),
             (TokenType::Operator(OperatorType::Multiply), ExprNode::multiply_node as InfixHandler),
             (TokenType::Operator(OperatorType::Divide), ExprNode::divide_node as InfixHandler),
+            (TokenType::Separator(SeparatorType::OpenParen), ExprNode::left_paren_infix as InfixHandler),
+            (TokenType::Separator(SeparatorType::CloseParen), ExprNode::right_paren_infix as InfixHandler),
+            (TokenType::Separator(SeparatorType::Comma), |left, tokens|{
+                ExprNode{
+                    nodetype: ExprNodeType::COMMALIST,
+                    left: Some(Box::new(left)),
+                    value: None,
+                    right: scan_expr(tokens, PRECEDENCES[&TokenType::Separator(SeparatorType::Comma)])
+                    .map_or_else(|| None, |v| Some(Box::new(v))),
+                }
+            }),
         ])
     
 );
@@ -406,7 +506,7 @@ fn test_stmt_scanner(){
 }
 #[test]
 fn test_expr_scanner(){
-    let rawexprstr="b+a*c-1";
+    let rawexprstr="b+(a*c-1),a+b,func(a,b,c);";
     println!("Expr Tokens:");
     let tokens=lexer::do_lex(rawexprstr);
     // let tokens=vec![Token::new(TokenType::Identifier, "a"),
