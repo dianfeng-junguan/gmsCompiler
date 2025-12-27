@@ -1,5 +1,5 @@
 use core::slice;
-use std::{collections::{self, BTreeMap, HashMap}, fmt::Debug, iter::Peekable, sync::{Arc, LazyLock, Mutex}, vec};
+use std::{collections::{self, BTreeMap, HashMap}, fmt::Debug, iter::Peekable, os::macos::raw::stat, sync::{Arc, LazyLock, Mutex}, vec};
 
 use crate::lexer::{self, ConstantType, KeywordType, OperatorType, SeparatorType, Token, TokenType};
 
@@ -9,6 +9,12 @@ pub enum ExprNodeType{
     SUB,
     MUL,
     DIV,
+    MOD,
+    EQUAL,
+    GT,//greater than
+    LT,
+    GE,
+    LE,
     FUNCCALL,//f(expr)
     PROPERTYVISIT,//a.b
     COMMALIST,// expr, expr...
@@ -25,7 +31,8 @@ impl Debug for ExprNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.nodetype {
             ExprNodeType::VALUE=>{
-                f.write_str(&format!("VALUE({})",self.value.as_ref().unwrap()))
+                let v=if self.value.is_some() { self.value.as_ref().unwrap() } else { "" };
+                f.write_str(&format!("VALUE({})",v))
             },
             _=>{
                 f.write_str(&format!("{:?}(",self.nodetype))?;
@@ -184,16 +191,22 @@ static PRECEDENCES:LazyLock<BTreeMap<TokenType,usize>>=LazyLock::new(||{BTreeMap
     (TokenType::Operator(OperatorType::Minus),120),
     (TokenType::Operator(OperatorType::Multiply),130),
     (TokenType::Operator(OperatorType::Divide),130),
+    (TokenType::Operator(OperatorType::Mod),130),
+    (TokenType::Operator(OperatorType::Equal),110),
+    (TokenType::Operator(OperatorType::Greater),110),
+    (TokenType::Operator(OperatorType::Less),110),
+    (TokenType::Operator(OperatorType::GreaterEqual),110),
+    (TokenType::Operator(OperatorType::LessEqual),110),
     (TokenType::Separator(SeparatorType::OpenParen),1000),
     (TokenType::Separator(SeparatorType::CloseParen),0),
     (TokenType::Separator(SeparatorType::Comma),100),
-    (TokenType::Separator(SeparatorType::Semicolon),0)
+    (TokenType::Separator(SeparatorType::Semicolon),0),
+    (TokenType::Separator(SeparatorType::OpenBrace),0)
 ])});
 type PrefixHandler=fn(&Token,&mut Peekable<slice::Iter<Token>>)->ExprNode;
 type InfixHandler=fn(ExprNode, &mut Peekable<slice::Iter<Token>>)->ExprNode;
 static PREFIX_HANDLERS:LazyLock<BTreeMap<TokenType, PrefixHandler>>=LazyLock::new(|| 
     BTreeMap::from([
-    //TODO need to recognize whether is a id or a func call
     (TokenType::Identifier, ExprNode::value_node as PrefixHandler),
     (TokenType::Constant(ConstantType::Integer), ExprNode::value_node),
     (TokenType::Constant(ConstantType::Float), ExprNode::value_node),
@@ -213,6 +226,61 @@ static INFIX_HANDLERS:LazyLock<BTreeMap<TokenType,InfixHandler>>=LazyLock::new(
             (TokenType::Operator(OperatorType::Minus), ExprNode::sub_node as InfixHandler),
             (TokenType::Operator(OperatorType::Multiply), ExprNode::multiply_node as InfixHandler),
             (TokenType::Operator(OperatorType::Divide), ExprNode::divide_node as InfixHandler),
+            // compare
+            (TokenType::Operator(OperatorType::Equal), |left, tokens|{
+                ExprNode{
+                    nodetype: ExprNodeType::EQUAL,
+                    left: Some(Box::new(left)),
+                    value: None,
+                    right: scan_expr(tokens, PRECEDENCES[&TokenType::Operator(OperatorType::Equal)])
+                    .map_or_else(|| None, |v| Some(Box::new(v))),
+                }
+            }),
+            (TokenType::Operator(OperatorType::Greater), |left, tokens|{
+                ExprNode{
+                    nodetype: ExprNodeType::GT,
+                    left: Some(Box::new(left)),
+                    value: None,
+                    right: scan_expr(tokens, PRECEDENCES[&TokenType::Operator(OperatorType::Greater)])
+                    .map_or_else(|| None, |v| Some(Box::new(v))),
+                }
+            }),
+            (TokenType::Operator(OperatorType::Less), |left, tokens|{
+                ExprNode{
+                    nodetype: ExprNodeType::LT,
+                    left: Some(Box::new(left)),
+                    value: None,
+                    right: scan_expr(tokens, PRECEDENCES[&TokenType::Operator(OperatorType::Less)])
+                    .map_or_else(|| None, |v| Some(Box::new(v))),
+                }
+            }),
+            (TokenType::Operator(OperatorType::GreaterEqual), |left, tokens|{
+                ExprNode{
+                    nodetype: ExprNodeType::GE,
+                    left: Some(Box::new(left)),
+                    value: None,
+                    right: scan_expr(tokens, PRECEDENCES[&TokenType::Operator(OperatorType::GreaterEqual)])
+                    .map_or_else(|| None, |v| Some(Box::new(v))),
+                }
+            }),
+            (TokenType::Operator(OperatorType::LessEqual), |left, tokens|{
+                ExprNode{
+                    nodetype: ExprNodeType::LE,
+                    left: Some(Box::new(left)),
+                    value: None,
+                    right: scan_expr(tokens, PRECEDENCES[&TokenType::Operator(OperatorType::LessEqual)])
+                    .map_or_else(|| None, |v| Some(Box::new(v))),
+                }
+            }),
+            (TokenType::Operator(OperatorType::Mod), |left, tokens|{
+                ExprNode{
+                    nodetype: ExprNodeType::MOD,
+                    left: Some(Box::new(left)),
+                    value: None,
+                    right: scan_expr(tokens, PRECEDENCES[&TokenType::Operator(OperatorType::Mod)])
+                    .map_or_else(|| None, |v| Some(Box::new(v))),
+                }
+            }),
             (TokenType::Separator(SeparatorType::OpenParen), ExprNode::left_paren_infix as InfixHandler),
             (TokenType::Separator(SeparatorType::CloseParen), ExprNode::right_paren_infix as InfixHandler),
             (TokenType::Separator(SeparatorType::Comma), |left, tokens|{
@@ -281,14 +349,23 @@ fn scan_expr(tokens:&mut Peekable<slice::Iter<Token>>,precedence:usize)->Option<
 pub enum StatementType {
     Definition,
     Assign,
-    SingleExpr
+    SingleExpr,
+    If,
+    While,
+    Return
 }
 #[derive(Clone, Debug)]
 pub struct StatementNode{
     pub stmttype:StatementType,
     pub typekw:Token,
     pub id:Token,
-    pub expr:ExprNode
+    pub expr:ExprNode,
+    //if else area
+    pub ifnode:Option<IfNode>,
+    pub elseifnodes:Option<Vec<ElseIfNode>>,
+    pub elsenode:Option<ElseNode>
+    // while area
+
 }
 impl StatementNode {
     pub const fn new(stmttype:StatementType,typekw:Token,id:Token,expr:ExprNode)->Self{
@@ -296,7 +373,21 @@ impl StatementNode {
             stmttype,
             typekw,
             id,
-            expr
+            expr,
+            ifnode: None,
+            elseifnodes: None,
+            elsenode: None,
+        }
+    }
+    pub fn new_if(ifnode:IfNode,elseifnodes:Option<Vec<ElseIfNode>>,elsenode:Option<ElseNode>)->Self{
+        Self{
+            stmttype:StatementType::If,
+            typekw: Token::new(TokenType::Keyword(KeywordType::If), "if"),
+            id: Token::new(TokenType::Identifier, ""),
+            expr: ExprNode{ nodetype: ExprNodeType::VALUE, left: None, value: None, right: None },
+            ifnode: Some(ifnode),
+            elseifnodes: elseifnodes,
+            elsenode: elsenode,
         }
     }
 }
@@ -361,7 +452,7 @@ fn scan_stmt(tokens:&mut Peekable<slice::Iter<Token>>)->Option<StatementNode> {
     //1. define
     // backup the iter in case the scanning fails
     let mut backupiter=tokens.clone();
-    let typekw=scan_token(TokenType::Keyword(KeywordType::Int), &mut backupiter);
+    let typekw=scan_token(TokenType::Keyword(KeywordType::Let), &mut backupiter);
     let id=scan_token(TokenType::Identifier, &mut backupiter);
     let eqop=scan_token(TokenType::Operator(OperatorType::Assign), &mut backupiter);
     let rexpr=scan_expr(&mut backupiter, 0);
@@ -390,7 +481,157 @@ fn scan_stmt(tokens:&mut Peekable<slice::Iter<Token>>)->Option<StatementNode> {
         *tokens=backupiter;
         return Some(StatementNode::new(StatementType::SingleExpr, Token::new(TokenType::Keyword(KeywordType::Int), ""), Token::new(TokenType::Identifier, ""), rexpr.unwrap()));
     }
+
+    //4. if-elseif-else
+    let ifnode=scan_if(tokens);
+    let elseifnodes={
+        let mut elseifnodes:Vec<ElseIfNode>=Vec::new();
+        loop {
+            let elseifnode=scan_elseif(tokens);
+            if elseifnode.is_none() {
+                break;
+            }
+            elseifnodes.push(elseifnode.unwrap());
+        }
+        elseifnodes
+    };
+    let elsenode=scan_else(tokens);
+    if ifnode.is_some() {
+        *tokens=backupiter;
+        return Some(StatementNode::new_if(ifnode.unwrap(), if elseifnodes.len()==0 {None} else {Some(elseifnodes)}, elsenode));
+    }
     None
+}
+fn scan_stmts(tokens:&mut Peekable<slice::Iter<Token>>)->Option<Vec<StatementNode>>{
+    let mut stmts:Vec<StatementNode>=Vec::new();
+    loop {
+        let stmt=scan_stmt(tokens);
+        if stmt.is_none() {
+            break;
+        }
+        stmts.push(stmt.unwrap());
+    }
+    Some(stmts)
+}
+#[derive(Clone, Debug)]
+struct IfNode{
+    pub ifkw:Token,
+    pub condition:ExprNode,
+    pub stmts:Vec<StatementNode>
+}
+impl IfNode {
+    pub fn new(ifkw:Token, condition:ExprNode, stmts:Vec<StatementNode>)->Self{
+        Self{
+            ifkw,
+            condition,
+            stmts
+        }
+    }
+}
+#[derive(Clone, Debug)]
+struct ElseIfNode{
+    pub elseifkw:Token,
+    pub condition:ExprNode,
+    pub stmts:Vec<StatementNode>
+}
+impl ElseIfNode {
+    pub fn new(elseifkw:Token, condition:ExprNode, stmts:Vec<StatementNode>)->Self{
+        Self{
+            elseifkw,
+            condition,
+            stmts
+        }
+    }
+}
+#[derive(Clone, Debug)]
+struct ElseNode{
+    pub elsekw:Token,
+    pub stmts:Vec<StatementNode>
+}
+impl ElseNode {
+    pub fn new(elsekw:Token, stmts:Vec<StatementNode>)->Self{
+        Self{
+            elsekw,
+            stmts
+        }
+    }
+}
+/// scan an if-else statement from the tokens.
+fn scan_if(tokens:&mut Peekable<slice::Iter<Token>>)->Option<IfNode>{
+    /*
+    if expr {
+        stmts
+    } else if expr {
+        stmts
+    } else {
+        stmts
+    }
+    */
+    let mut backupiter=tokens.clone();
+    let ifkw=scan_token(TokenType::Keyword(KeywordType::If), &mut backupiter);
+    let condition_expr=scan_expr(&mut backupiter, 0);
+    let openbracetok=scan_token(TokenType::Separator(SeparatorType::OpenBrace), &mut backupiter);
+    // checkpoint
+    if ifkw.is_none()||condition_expr.is_none()||openbracetok.is_none() {
+        return None;
+    }
+    // scan the stmts
+    let stmts=scan_stmts(&mut backupiter).unwrap();
+    let closebracetok=scan_token(TokenType::Separator(SeparatorType::CloseBrace), &mut backupiter);
+    //checkpoint
+    if closebracetok.is_none() {
+        return None;
+    }
+    *tokens=backupiter;
+    Some(IfNode::new(ifkw.unwrap(), condition_expr.unwrap(), stmts))
+}
+fn scan_elseif(tokens:&mut Peekable<slice::Iter<Token>>)->Option<ElseIfNode>{
+    /*
+    else if expr {
+        stmts
+    }
+    */
+    let mut backupiter=tokens.clone();
+    let elseifkw=scan_token(TokenType::Keyword(KeywordType::Else), &mut backupiter);
+    let elseifkw=scan_token(TokenType::Keyword(KeywordType::If), &mut backupiter);
+    let condition_expr=scan_expr(&mut backupiter, 0);
+    let openbracetok=scan_token(TokenType::Separator(SeparatorType::OpenBrace), &mut backupiter);
+    // checkpoint
+    if elseifkw.is_none()||condition_expr.is_none()||openbracetok.is_none() {
+        return None;
+    }
+    // scan the stmts
+    let stmts=scan_stmts(&mut backupiter).unwrap();
+    let closebracetok=scan_token(TokenType::Separator(SeparatorType::CloseBrace), &mut backupiter);
+    //checkpoint
+    if closebracetok.is_none() {
+        return None;
+    }
+    *tokens=backupiter;
+    Some(ElseIfNode::new(elseifkw.unwrap(), condition_expr.unwrap(), stmts))
+}
+fn scan_else(tokens:&mut Peekable<slice::Iter<Token>>)->Option<ElseNode>{
+    /*
+    else {
+        stmts
+    }
+    */
+    let mut backupiter=tokens.clone();
+    let elsekw=scan_token(TokenType::Keyword(KeywordType::Else), &mut backupiter);
+    let openbracetok=scan_token(TokenType::Separator(SeparatorType::OpenBrace), &mut backupiter);
+    // checkpoint
+    if elsekw.is_none()||openbracetok.is_none() {
+        return None;
+    }
+    // scan the stmts
+    let stmts=scan_stmts(&mut backupiter).unwrap();
+    let closebracetok=scan_token(TokenType::Separator(SeparatorType::CloseBrace), &mut backupiter);
+    //checkpoint
+    if closebracetok.is_none() {
+        return None;
+    }
+    *tokens=backupiter;
+    Some(ElseNode::new(elsekw.unwrap(), stmts))
 }
 /// scan a function from the tokens.
 fn scan_func(tokens:&mut Peekable<slice::Iter<Token>>)->Option<FunctionNode>{
@@ -433,14 +674,7 @@ fn scan_func(tokens:&mut Peekable<slice::Iter<Token>>)->Option<FunctionNode>{
         return None;
     }
     // scan the stmts
-    let mut stmts:Vec<StatementNode>=Vec::new();
-    loop {
-        let stmt=scan_stmt(&mut backupiter);
-        if stmt.is_none() {
-            break;
-        }
-        stmts.push(stmt.unwrap());
-    }
+    let stmts=scan_stmts(&mut backupiter).unwrap();
     let closebracetok=scan_token(TokenType::Separator(SeparatorType::CloseBrace), &mut backupiter);
     // last we check the closing brace
     if closebracetok.is_none() {
@@ -465,11 +699,12 @@ pub fn generate_ast(tokens:&Vec<Token>)->Option<ASTNode>{
 #[test]
 fn test_func_scanner(){
     let rawfuncstr="fn main():int {
-        int a=1;
-        int b=2;
-        int c=3;
+        let a=1;
+        let b=2;
+        let c=3;
         c=a+b;
         a;
+        f(a,1);
     }";
     println!("Function Tokens:");
     let tokens=lexer::do_lex(rawfuncstr);
@@ -488,21 +723,37 @@ fn test_func_scanner(){
 }
 #[test]
 fn test_stmt_scanner(){
-    let rawstmtstr="int a = b + c * 2;";
-    println!("Statement Tokens:");
-    let tokens=lexer::do_lex(rawstmtstr);
-    // let tokens=vec![Token::new(TokenType::Identifier, "a"),
-    // Token::new(TokenType::Operator(OperatorType::Plus), "+"),
-    // Token::new(TokenType::Identifier, "b")];
-    let mut tokiter=tokens.iter().peekable();
-    let stmt=scan_stmt(&mut tokiter);
-    if let Some(stmtnode) = stmt {
-        println!("{:?}",stmtnode);
-        assert!(true);
-    }else {
-        println!("stmt scanning failed");
-        assert!(false);
+    let rawstmtstrs=vec![
+        "let a = b + c * 2;",
+        "a = b - 3 / d;",
+        "foo(a, b, c);",
+        "if a > b {
+            c = a + b;
+        } else if a == b {
+            c = a - b;
+        } else {
+            c = 0;
+        }"
+    ];
+    let mut statements:Vec<StatementNode>=Vec::new();
+    for raws in rawstmtstrs.iter() {
+        println!("Statement Tokens:");
+        let tokens=lexer::do_lex(raws);
+        // let tokens=vec![Token::new(TokenType::Identifier, "a"),
+        // Token::new(TokenType::Operator(OperatorType::Plus), "+"),
+        // Token::new(TokenType::Identifier, "b")];
+        let mut tokiter=tokens.iter().peekable();
+        let stmt=scan_stmt(&mut tokiter);
+        if let Some(stmtnode) = stmt {
+            statements.push(stmtnode);  
+        }else {
+            println!("stmt scanning failed");
+            assert!(false);
+        }
     }
+    statements.iter().for_each(|stmt|{
+        println!("{:?}",stmt);
+    });
 }
 #[test]
 fn test_expr_scanner(){
