@@ -4,7 +4,7 @@ use std::{collections::{self, BTreeMap, HashMap}, fmt::Debug, iter::Peekable, sy
 use crate::lexer::{self, ConstantType, KeywordType, OperatorType, SeparatorType, Token, TokenType};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-enum ExprNodeType{
+pub enum ExprNodeType{
     ADD,
     SUB,
     MUL,
@@ -15,11 +15,11 @@ enum ExprNodeType{
     VALUE// 一个单纯的值或者标识符
 }
 #[derive(Clone)]
-struct ExprNode{
-    nodetype:ExprNodeType,
-    left:Option<Box<ExprNode>>,
-    value:Option<String>,
-    right:Option<Box<ExprNode>>
+pub struct ExprNode{
+    pub nodetype:ExprNodeType,
+    pub left:Option<Box<ExprNode>>,
+    pub value:Option<String>,
+    pub right:Option<Box<ExprNode>>
 }
 impl Debug for ExprNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -178,17 +178,17 @@ fn scan_expr(tokens:&mut Peekable<slice::Iter<Token>>,precedence:usize)->Option<
     Some(left)
 }
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum StatementType {
+pub enum StatementType {
     Definition,
     Assign,
     SingleExpr
 }
 #[derive(Clone, Debug)]
-struct StatementNode{
-    stmttype:StatementType,
-    typekw:Token,
-    id:Token,
-    expr:ExprNode
+pub struct StatementNode{
+    pub stmttype:StatementType,
+    pub typekw:Token,
+    pub id:Token,
+    pub expr:ExprNode
 }
 impl StatementNode {
     pub const fn new(stmttype:StatementType,typekw:Token,id:Token,expr:ExprNode)->Self{
@@ -201,12 +201,12 @@ impl StatementNode {
     }
 }
 #[derive(Clone)]
-struct FunctionNode{
-    fnkw:Token,
-    id:Token,
-    returntypekw:Token,
-    params:Vec<(Token,Token)>,// (param id, param type)
-    stmts:Vec<StatementNode>
+pub struct FunctionNode{
+    pub fnkw:Token,
+    pub id:Token,
+    pub returntypekw:Token,
+    pub params:Vec<(Token,Token)>,// (param id, param type)
+    pub stmts:Vec<StatementNode>
 }
 impl Debug for FunctionNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -234,8 +234,8 @@ impl FunctionNode {
 }
 
 #[derive(Clone, Debug)]
-struct ASTNode{
-    functions:Vec<FunctionNode>
+pub struct ASTNode{
+    pub functions:Vec<FunctionNode>
 }
 impl ASTNode {
     pub fn new(functions:Vec<FunctionNode>)->Self{
@@ -350,7 +350,7 @@ fn scan_func(tokens:&mut Peekable<slice::Iter<Token>>)->Option<FunctionNode>{
     Some(FunctionNode::new(fnkw.unwrap(), id.unwrap(), returntypekw.unwrap(), params, stmts))
 }
 /// parser work-generate AST from tokens.
-fn generate_ast(tokens:&Vec<Token>)->Option<ASTNode>{
+pub fn generate_ast(tokens:&Vec<Token>)->Option<ASTNode>{
     let mut tokiter=tokens.iter().peekable();
     let mut functions:Vec<FunctionNode>=Vec::new();
     loop {
