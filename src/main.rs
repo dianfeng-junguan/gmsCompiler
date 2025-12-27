@@ -3,6 +3,8 @@ pub mod lexer;
 pub mod parser;
 pub mod intercode;
 pub mod asmgen;
+pub mod sematic;
+pub mod errs;
 static TEMPLATE_CODE: &str = r#"
 fn main():int {
     int a=1;

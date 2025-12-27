@@ -1,7 +1,7 @@
 use core::slice;
 use std::{collections::{self, BTreeMap, HashMap}, fmt::Debug, iter::Peekable, os::macos::raw::stat, sync::{Arc, LazyLock, Mutex}, vec};
 
-use crate::lexer::{self, ConstantType, KeywordType, OperatorType, SeparatorType, Token, TokenType};
+use crate::{errs::{ERR_PARSER, cry_err}, lexer::{self, ConstantType, KeywordType, OperatorType, SeparatorType, Token, TokenType}};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum ExprNodeType{
@@ -49,6 +49,14 @@ impl Debug for ExprNode {
     }
 }
 impl ExprNode {
+    pub fn empty()->Self{
+        Self{
+            nodetype: ExprNodeType::VALUE,
+            left: None,
+            value: Some(String::from("0")),
+            right: None,
+        }
+    }
     pub fn value_node(token:&Token, tokens:&mut Peekable<slice::Iter<Token>>)->Self{
         Self{
             nodetype: ExprNodeType::VALUE,
@@ -74,13 +82,14 @@ impl ExprNode {
         // expect a closing paren
         let closeparen=scan_token(TokenType::Separator(SeparatorType::CloseParen), tokens);
         if closeparen.is_none() {
-            panic!("syntax error: missing closing parenthesis");
+            cry_err(ERR_PARSER, "syntax error: missing closing parenthesis", 0, 0);
         }
         exprnode
     }
 
     pub fn right_paren_prefix(token:&Token, tokens:&mut Peekable<slice::Iter<Token>>)->Self{
-        panic!("syntax error: unexpected closing parenthesis");
+        cry_err(ERR_PARSER, "syntax error: unexpected closing parenthesis", 0, 0);
+        Self::empty()
     }
     // infix handlers
     pub fn add_node(left:ExprNode, tokens:&mut Peekable<slice::Iter<Token>>)->Self{
@@ -130,7 +139,8 @@ impl ExprNode {
         // expect a closing paren
         let closeparen=scan_token(TokenType::Separator(SeparatorType::CloseParen), tokens);
         if closeparen.is_none() {
-            panic!("syntax error: missing closing parenthesis in function call");
+            cry_err(ERR_PARSER,"syntax error: missing closing parenthesis in function call", 0, 0);
+            return Self::empty();
         }
         Self{
             nodetype: ExprNodeType::FUNCCALL,
@@ -139,9 +149,9 @@ impl ExprNode {
             right: Some(Box::new(args)),
         }
     }
-
     pub fn right_paren_infix(left:ExprNode, tokens:&mut Peekable<slice::Iter<Token>>)->Self{
-        panic!("syntax error: unexpected closing parenthesis in infix position");
+        cry_err(ERR_PARSER,"syntax error: unexpected closing parenthesis in infix position",0,0);
+        Self::empty()
     }
 }
 /*
@@ -215,7 +225,8 @@ static PREFIX_HANDLERS:LazyLock<BTreeMap<TokenType, PrefixHandler>>=LazyLock::ne
     (TokenType::Separator(SeparatorType::OpenParen), ExprNode::left_paren_prefix),
     (TokenType::Separator(SeparatorType::CloseParen), ExprNode::right_paren_prefix),
     (TokenType::Separator(SeparatorType::Comma), |token, tokiter|{
-        panic!("syntax error: unexpected comma in prefix position");
+        cry_err(ERR_PARSER, "syntax error: unexpected comma in prefix position", 0, 0);
+        return ExprNode::empty();
     })
 
 ]));
@@ -305,6 +316,7 @@ fn scan_expr(tokens:&mut Peekable<slice::Iter<Token>>,precedence:usize)->Option<
     let lefttoken=lefttoken.unwrap();
     //get the left node by calling the handler of this kind of token
     if PREFIX_HANDLERS.iter().find(|(toktype,handler)| *toktype==&lefttoken.kind).is_none() {
+        cry_err(ERR_PARSER, &format!("cannot find prefix handler of this token :{}",lefttoken.kind), 0, 0);
         return None;
     }
     let mut left=PREFIX_HANDLERS[&lefttoken.kind](lefttoken, tokens);
@@ -323,7 +335,7 @@ fn scan_expr(tokens:&mut Peekable<slice::Iter<Token>>,precedence:usize)->Option<
         }
         if PRECEDENCES.iter().find(|(toktyp,_)| *toktyp==&righttoken.kind).is_none() {
             // not an infix operator
-            println!("scan_expr met an unknown infix token {:?}",righttoken);
+            cry_err(ERR_PARSER, &format!("scan_expr met an unknown infix token {:?}",righttoken), 0, 0);
             return None;
         }
         // if the precedence of the new token is higher than ours, take it.
@@ -500,6 +512,7 @@ fn scan_stmt(tokens:&mut Peekable<slice::Iter<Token>>)->Option<StatementNode> {
         *tokens=backupiter;
         return Some(StatementNode::new_if(ifnode.unwrap(), if elseifnodes.len()==0 {None} else {Some(elseifnodes)}, elsenode));
     }
+    cry_err(ERR_PARSER, "cannot parse the tokens as statement", 0, 0);
     None
 }
 fn scan_stmts(tokens:&mut Peekable<slice::Iter<Token>>)->Option<Vec<StatementNode>>{
@@ -572,7 +585,15 @@ fn scan_if(tokens:&mut Peekable<slice::Iter<Token>>)->Option<IfNode>{
     let condition_expr=scan_expr(&mut backupiter, 0);
     let openbracetok=scan_token(TokenType::Separator(SeparatorType::OpenBrace), &mut backupiter);
     // checkpoint
-    if ifkw.is_none()||condition_expr.is_none()||openbracetok.is_none() {
+    if ifkw.is_none() {
+        //it might not be an if statement
+        return None;
+    }else if condition_expr.is_none() {
+        //incomplete if statement
+        cry_err(ERR_PARSER, "incomplete if statment: lack of condition", 0, 0);
+        return None;
+    }else if openbracetok.is_none() {
+        cry_err(ERR_PARSER, "incomplete if statment: lacking '{'", 0, 0);
         return None;
     }
     // scan the stmts
@@ -580,6 +601,7 @@ fn scan_if(tokens:&mut Peekable<slice::Iter<Token>>)->Option<IfNode>{
     let closebracetok=scan_token(TokenType::Separator(SeparatorType::CloseBrace), &mut backupiter);
     //checkpoint
     if closebracetok.is_none() {
+        cry_err(ERR_PARSER, "incomplete if statement: lacking }", 0, 0);
         return None;
     }
     *tokens=backupiter;
@@ -597,7 +619,14 @@ fn scan_elseif(tokens:&mut Peekable<slice::Iter<Token>>)->Option<ElseIfNode>{
     let condition_expr=scan_expr(&mut backupiter, 0);
     let openbracetok=scan_token(TokenType::Separator(SeparatorType::OpenBrace), &mut backupiter);
     // checkpoint
-    if elseifkw.is_none()||condition_expr.is_none()||openbracetok.is_none() {
+    if elseifkw.is_none(){
+        return None;
+    }else if condition_expr.is_none() {
+        //incomplete else if statement
+        cry_err(ERR_PARSER, "incomplete else if statment: lack of condition", 0, 0);
+        return None;
+    }else if openbracetok.is_none() {
+        cry_err(ERR_PARSER, "incomplete else if statment: lacking '{'", 0, 0);
         return None;
     }
     // scan the stmts
@@ -605,6 +634,7 @@ fn scan_elseif(tokens:&mut Peekable<slice::Iter<Token>>)->Option<ElseIfNode>{
     let closebracetok=scan_token(TokenType::Separator(SeparatorType::CloseBrace), &mut backupiter);
     //checkpoint
     if closebracetok.is_none() {
+        cry_err(ERR_PARSER, "incomplete else if statement: lacking }", 0, 0);
         return None;
     }
     *tokens=backupiter;
@@ -620,7 +650,10 @@ fn scan_else(tokens:&mut Peekable<slice::Iter<Token>>)->Option<ElseNode>{
     let elsekw=scan_token(TokenType::Keyword(KeywordType::Else), &mut backupiter);
     let openbracetok=scan_token(TokenType::Separator(SeparatorType::OpenBrace), &mut backupiter);
     // checkpoint
-    if elsekw.is_none()||openbracetok.is_none() {
+    if elsekw.is_none() {
+        return None;
+    }else if openbracetok.is_none() {
+        cry_err(ERR_PARSER, "incomplete else statment: lacking '{'", 0, 0);
         return None;
     }
     // scan the stmts
@@ -628,6 +661,7 @@ fn scan_else(tokens:&mut Peekable<slice::Iter<Token>>)->Option<ElseNode>{
     let closebracetok=scan_token(TokenType::Separator(SeparatorType::CloseBrace), &mut backupiter);
     //checkpoint
     if closebracetok.is_none() {
+        cry_err(ERR_PARSER, "incomplete else statement: lacking }", 0, 0);
         return None;
     }
     *tokens=backupiter;
@@ -647,7 +681,13 @@ fn scan_func(tokens:&mut Peekable<slice::Iter<Token>>)->Option<FunctionNode>{
     let id=scan_token(TokenType::Identifier, &mut backupiter);
     let openparen=scan_token(TokenType::Separator(SeparatorType::OpenParen), &mut backupiter);
     // checkpoint
-    if fnkw.is_none()||id.is_none()||openparen.is_none() {
+    if fnkw.is_none(){
+        return None;
+    }else if id.is_none() {
+        cry_err(ERR_PARSER, "incomplete function definition: lack of function name", 0, 0);
+        return None;
+    }else if openparen.is_none() {
+        cry_err(ERR_PARSER, "incomplete function definition: lack of '('", 0, 0);
         return None;
     }
     let mut params:Vec<(Token,Token)>=Vec::new();
@@ -670,7 +710,16 @@ fn scan_func(tokens:&mut Peekable<slice::Iter<Token>>)->Option<FunctionNode>{
     let returntypekw=scan_token(TokenType::Keyword(KeywordType::Int), &mut backupiter);
     let openbracetok=scan_token(TokenType::Separator(SeparatorType::OpenBrace), &mut backupiter);
     //checkpoint
-    if closeparentok.is_none()||colontok.is_none()||returntypekw.is_none()||openbracetok.is_none() {
+    if closeparentok.is_none() {
+        return None;
+    }else if colontok.is_none(){
+        cry_err(ERR_PARSER, "incomplete function: lacking ':'", 0, 0);
+        return None;
+    }else if returntypekw.is_none(){
+        cry_err(ERR_PARSER, "incomplete function: lacking return type", 0, 0);
+        return None;
+    }else if openbracetok.is_none(){
+        cry_err(ERR_PARSER, "incomplete function: lacking '{'", 0, 0);
         return None;
     }
     // scan the stmts
@@ -678,6 +727,7 @@ fn scan_func(tokens:&mut Peekable<slice::Iter<Token>>)->Option<FunctionNode>{
     let closebracetok=scan_token(TokenType::Separator(SeparatorType::CloseBrace), &mut backupiter);
     // last we check the closing brace
     if closebracetok.is_none() {
+        cry_err(ERR_PARSER, "incomplete function: lacking '}'", 0, 0);
         return None;
     }
     *tokens=backupiter;
