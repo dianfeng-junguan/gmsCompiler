@@ -232,6 +232,18 @@ impl FunctionNode {
         }
     }
 }
+
+#[derive(Clone, Debug)]
+struct ASTNode{
+    functions:Vec<FunctionNode>
+}
+impl ASTNode {
+    pub fn new(functions:Vec<FunctionNode>)->Self{
+        Self{
+            functions
+        }   
+    }
+}
 /// scan a specific type of token from the tokens.
 fn scan_token(toktype:TokenType, tokens:&mut Peekable<slice::Iter<Token>>)->Option<Token>{
     if let Some(tok) = tokens.peek() {
@@ -336,6 +348,19 @@ fn scan_func(tokens:&mut Peekable<slice::Iter<Token>>)->Option<FunctionNode>{
     }
     *tokens=backupiter;
     Some(FunctionNode::new(fnkw.unwrap(), id.unwrap(), returntypekw.unwrap(), params, stmts))
+}
+/// parser work-generate AST from tokens.
+fn generate_ast(tokens:&Vec<Token>)->Option<ASTNode>{
+    let mut tokiter=tokens.iter().peekable();
+    let mut functions:Vec<FunctionNode>=Vec::new();
+    loop {
+        if let Some(funcnode) = scan_func(&mut tokiter) {
+            functions.push(funcnode);
+        }else {
+            break;
+        }
+    }
+    Some(ASTNode::new(functions))
 }
 #[test]
 fn test_func_scanner(){
