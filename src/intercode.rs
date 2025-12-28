@@ -1,4 +1,6 @@
-use crate::parser::{ASTNode, ExprNode, ExprNodeType, FunctionNode, StatementNode, StatementType};
+use std::{collections::BTreeMap, sync::Mutex};
+
+use crate::{errs::cry_err, parser::{ASTNode, ExprNode, ExprNodeType, FunctionNode, StatementNode, StatementType}};
 
 /*
     specifices of intermediate code
@@ -10,14 +12,14 @@ use crate::parser::{ASTNode, ExprNode, ExprNodeType, FunctionNode, StatementNode
         c=a+b;
     }
     to:
-    func main 4 ()
-    alloc a 4
+    func main 8 ()
+    alloc a 8
     mov a 1
-    alloc b 4
+    alloc b 8
     mov b 2
-    alloc c 4
+    alloc c 8
     mov c 0
-    alloc tmp 4
+    alloc tmp 8
     mov tmp a
     add tmp b
     mov c tmp
@@ -36,12 +38,23 @@ use crate::parser::{ASTNode, ExprNode, ExprNodeType, FunctionNode, StatementNode
 */
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntermediateCodeType {
-    Alloc,
+    AllocGlobal,
+    AllocLocal,
+    AllocTemp,
+    Free,
+    ScopeStart,
+    ScopeEnd,
     Mov,
     Add,
     Sub,
     Mul,
     Div,
+    Cmp,
+    Je,
+    Ja,
+    Jb,
+    Jmp,
+    Label,
     FuncCall,
     PropertyVisit,
     Retemp,
@@ -58,6 +71,69 @@ impl IntermediateCode {
         IntermediateCode {
             code_type,
             operands,
+        }
+    }
+    //
+    pub fn alloc_temp(name:&str,size:usize)->Self{
+        IntermediateCode{
+            code_type:IntermediateCodeType::AllocTemp,
+            operands:vec![name.to_string(), size.to_string()],
+        }
+    }
+
+    pub fn alloc_local(name:&str,size:usize)->Self{
+        IntermediateCode{
+            code_type:IntermediateCodeType::AllocLocal,
+            operands:vec![name.to_string(), size.to_string()],
+        }
+    }
+
+    pub fn free(name:&str)->Self{
+        IntermediateCode{
+            code_type:IntermediateCodeType::Free,
+            operands:vec![name.to_string()],
+        }
+    }
+
+    pub const fn scope_start()->Self{
+        IntermediateCode{
+            code_type:IntermediateCodeType::ScopeStart,
+            operands:vec![],
+        }
+    }
+
+    pub const fn scope_end()->Self{
+        IntermediateCode{
+            code_type:IntermediateCodeType::ScopeEnd,
+            operands:vec![],
+        }
+    }
+
+    pub fn label(labelname:&str)->Self{
+        IntermediateCode{
+            code_type:IntermediateCodeType::Label,
+            operands:vec![labelname.to_string()],
+        }
+    }
+
+    pub fn compare(left:&str, right:&str)->Self{
+        IntermediateCode{
+            code_type:IntermediateCodeType::Cmp,
+            operands:vec![left.to_string(), right.to_string()],
+        }
+    }
+
+    pub fn je(label:&str)->Self{
+        IntermediateCode{
+            code_type:IntermediateCodeType::Je,
+            operands:vec![label.to_string()],
+        }
+    }
+
+    pub fn jmp(label:&str)->Self{
+        IntermediateCode{
+            code_type:IntermediateCodeType::Jmp,
+            operands:vec![label.to_string()],
         }
     }
 }
@@ -79,17 +155,22 @@ fn translate_expr(exprnode:&ExprNode, alloced_tmpvar_num: usize)->Option<(Vec<In
             // no extra intercode and directly return the value
             return Some((vec![], exprnode.value.clone().unwrap(), 0));
         },
-        ExprNodeType::ADD|ExprNodeType::SUB|ExprNodeType::MUL|ExprNodeType::DIV|ExprNodeType::FUNCCALL=>{
+        ExprNodeType::ADD|ExprNodeType::SUB|ExprNodeType::MUL|
+        ExprNodeType::DIV|ExprNodeType::FUNCCALL|
+        ExprNodeType::EQUAL=>{
             // two-operand node need to translate left and right nodes
-            let (left_codes, left_var, left_tmpnum)=translate_expr(exprnode.left.as_ref().unwrap(), alloced_tmpvar_num + tmpnamec)?;
-            tmpnamec+=left_tmpnum;
+            let leftnode=exprnode.left.as_ref().unwrap();
+            let rightnode=exprnode.right.as_ref().unwrap();
+            let (left_codes, left_var, _)=translate_expr(leftnode, alloced_tmpvar_num + tmpnamec)?;
+            // the sub expr is supposed to free it's subexpr's tmp var so it should only generate one temp var to store the result
+            tmpnamec+=1;
             intercodes.extend(left_codes);
-            let (right_codes, right_var, right_tmpnum)=translate_expr(exprnode.right.as_ref().unwrap(), alloced_tmpvar_num + tmpnamec)?;
-            tmpnamec+=right_tmpnum;
+            let (right_codes, right_var, _)=translate_expr(rightnode, alloced_tmpvar_num + tmpnamec)?;
+            tmpnamec+=1;
             intercodes.extend(right_codes);
             // now generate a new temporary variable to store the result
             let tmp_var_name=format!("tmp{}", alloced_tmpvar_num + tmpnamec);
-            intercodes.push(IntermediateCode::new(IntermediateCodeType::Alloc, vec![tmp_var_name.clone(), "4".to_string()]));
+            intercodes.push(IntermediateCode::alloc_temp(&tmp_var_name, 8));
             tmpnamec+=1;
             intercodes.push(IntermediateCode::new(IntermediateCodeType::Mov, vec![tmp_var_name.clone(),left_var.clone()]));
             // generate the operation code
@@ -100,17 +181,34 @@ fn translate_expr(exprnode:&ExprNode, alloced_tmpvar_num: usize)->Option<(Vec<In
                 ExprNodeType::DIV=>IntermediateCodeType::Div,
                 ExprNodeType::FUNCCALL=>IntermediateCodeType::FuncCall,
                 ExprNodeType::PROPERTYVISIT=>IntermediateCodeType::PropertyVisit,
+                ExprNodeType::EQUAL=>IntermediateCodeType::Cmp,
                 _=>return None,// should not reach here
             };
-            intercodes.push(IntermediateCode::new(op_type, vec![tmp_var_name.clone(), right_var]));
+            intercodes.push(IntermediateCode::new(op_type, vec![tmp_var_name.clone(), right_var.clone()]));
+            // now the temp var of the left and right expr can be freed
+            if leftnode.nodetype!=ExprNodeType::VALUE {
+                intercodes.push(IntermediateCode::free(&left_var));
+            }
+            if rightnode.nodetype!=ExprNodeType::VALUE {
+                intercodes.push(IntermediateCode::free(&right_var));
+            }
             return Some((intercodes, tmp_var_name, tmpnamec));
         },
         // single-operand node
-        _=>{}
+        _=>{
+            cry_err("Intermediate Code Generator", "met unknown expr node type", 0, 0);
+        }
     }
     None
 }
-fn translate_stmt(stmt:&StatementNode, alloced_tmpvar_num: usize)->Option<(Vec<IntermediateCode>, usize)>{
+static GLOBAL_ID:Mutex<usize>=Mutex::new(0);
+fn alloc_global_id()->usize{
+    let mut id=GLOBAL_ID.lock().unwrap();
+    let prev=*id;
+    *id+=1;
+    prev
+}
+fn translate_stmt(stmt:&StatementNode, alloced_tmpvar_num: usize, symbols:&mut Vec<Symbol>)->Option<(Vec<IntermediateCode>, usize)>{
     let mut tmpnamec=0;
     let mut intercodes:Vec<IntermediateCode>=Vec::new();
     match stmt.stmttype{
@@ -121,38 +219,170 @@ fn translate_stmt(stmt:&StatementNode, alloced_tmpvar_num: usize)->Option<(Vec<I
             intercodes.extend(expr_codes);
             // allocate the variable
             // TODO : determine variable size based on type
-            let varsize="4".to_string();
-            intercodes.push(IntermediateCode::new(IntermediateCodeType::Alloc, vec![stmt.id.value.clone(), varsize]));
+            let varsize=8;
+            intercodes.push(IntermediateCode::alloc_local(&stmt.id.value, varsize));
             // move the value to the variable
-            intercodes.push(IntermediateCode::new(IntermediateCodeType::Mov, vec![stmt.id.value.clone(), expr_var]));
+            intercodes.push(IntermediateCode::new(IntermediateCodeType::Mov, vec![stmt.id.value.clone(), expr_var.clone()]));
+            // free the temporary variables used in expression
+            if stmt.expr.nodetype!=ExprNodeType::VALUE {
+                intercodes.push(IntermediateCode::free(&expr_var));
+            }
+            // add to symbol table
+            // set the address to 0 for now, will be set during memory allocation
+            symbols.push(Symbol::new(stmt.id.value.clone(), SymbolType::Variable, false, vec![], 8, 0));
             return Some((intercodes, tmpnamec));
         },
         StatementType::Assign=>{
             // translate the expression on the right side
             let (expr_codes, expr_var, expr_tmpnum)=translate_expr(&stmt.expr, alloced_tmpvar_num + tmpnamec)?;
-            tmpnamec+=expr_tmpnum;
+            tmpnamec+=1;
             intercodes.extend(expr_codes);
             // move the value to the variable
-            intercodes.push(IntermediateCode::new(IntermediateCodeType::Mov, vec![stmt.id.value.clone(), expr_var]));
+            intercodes.push(IntermediateCode::new(IntermediateCodeType::Mov, vec![stmt.id.value.clone(), expr_var.clone()]));
+            // free the temporary variables used in expression
+            if stmt.expr.nodetype!=ExprNodeType::VALUE {
+                intercodes.push(IntermediateCode::free(&expr_var));
+            }
             return Some((intercodes, tmpnamec));
         },
         StatementType::SingleExpr=>{
             // translate the expression
-            let (expr_codes, _expr_var, expr_tmpnum)=translate_expr(&stmt.expr, alloced_tmpvar_num + tmpnamec)?;
-            tmpnamec+=expr_tmpnum;
+            let (expr_codes, expr_var, expr_tmpnum)=translate_expr(&stmt.expr, alloced_tmpvar_num + tmpnamec)?;
+            tmpnamec+=1;
             intercodes.extend(expr_codes);
+            if stmt.expr.nodetype!=ExprNodeType::VALUE {
+                intercodes.push(IntermediateCode::free(&expr_var));
+            }
             return Some((intercodes, tmpnamec));
         },
+        StatementType::If=>{
+            /*
+                1. calc the condition expr
+                2. cmp the result with 0
+                3. je to else
+                4. put the if body codes
+                5. jmp to end
+                6. calc the elseif condition expr
+                7. je to next elseif / else
+                8. put the elseif body codes
+                9. if more elseif, jmp to 6
+                10. put the else body codes
+                11. end:
+            */
+            let ifnode=&stmt.ifnode.as_ref().unwrap();
+            let elseifnodes=stmt.elseifnodes.as_ref();
+            let elsenode=stmt.elsenode.as_ref();
+            let (condcode, condexprvarname, _)=translate_expr(&ifnode.condition, alloced_tmpvar_num)?;
+            // condition expr code
+            intercodes.extend(condcode);
+            // compare with 0
+            intercodes.push(IntermediateCode::compare(&condexprvarname, "0"));
+            // free condition expr temp var
+            intercodes.push(IntermediateCode::free(&condexprvarname));
+            // jump if equal to 0 (false)
+            let ifcond_false_label=format!("else{}",alloc_global_id());
+            intercodes.push(IntermediateCode::je(&ifcond_false_label));
+            // now put the if body
+            let (ifcode,_)= translate_scope(&ifnode.stmts, alloced_tmpvar_num, symbols)?;
+            intercodes.extend(ifcode);
+            // here comes the "if" not true part
+            intercodes.push(IntermediateCode::label(&ifcond_false_label));
+            // now deal with multiple else-if
+            if let Some(elseifnodes) = elseifnodes {
+                for elifnode in elseifnodes.iter() {
+                    // condition
+                    let (elif_condcode, elif_condvar, _)=translate_expr(&elifnode.condition, alloced_tmpvar_num)?;
+                    intercodes.extend(elif_condcode);
+                    // cmp
+                    intercodes.push(IntermediateCode::compare(&elif_condvar, "0"));
+                    // free tmpvar
+                    intercodes.push(IntermediateCode::free(&elif_condvar));
+                    // je
+                    let elseif_false_label=format!("else{}",alloc_global_id());
+                    intercodes.push(IntermediateCode::je(&elseif_false_label));
+                    // put the body
+                    let (elseifcode,_)=translate_scope(&elifnode.stmts, alloced_tmpvar_num, symbols)?;
+                    intercodes.extend(elseifcode);
+                    //put the false label
+                    intercodes.push(IntermediateCode::label(&elseif_false_label));
+                }
+            }
+            // now the else
+            if let Some(elsenode) = elsenode{
+                let (elsecode,_)=translate_scope(&elsenode.stmts, alloced_tmpvar_num, symbols)?;
+                intercodes.extend(elsecode);
+            }
+            return Some((intercodes, tmpnamec));
+        }
         _=>{}
     }
     None
 }
-fn translate_function(funcnode:&FunctionNode,alloced_tmpvar_num: usize)->Option<(Vec<IntermediateCode>,usize)>{
+/// translate a scope (a block of statements) to intermediate code
+/// return None if translation fails
+/// # Arguments
+/// * `stmts` - vector of statement nodes in the scope
+/// * `alloced_tmpvar_num` - number of temporary variables already allocated, used to generate new temporary variable names
+/// * `symbols` - mutable reference to the symbol table
+/// # Returns
+/// Option containing a tuple of vector of intermediate codes and the number of temporary variables allocated in this
+fn translate_scope(stmts:&Vec<StatementNode>, alloced_tmpvar_num: usize, symbols:&mut Vec<Symbol>)->Option<(Vec<IntermediateCode>, usize)>{
+    let mut tmpnamec=0;
+    let mut intercodes:Vec<IntermediateCode>=Vec::new();
+    intercodes.push(IntermediateCode::scope_start());
+    let mut scope_vars=vec![];
+    for stmt in stmts {
+        let (stmt_codes, stmt_tmpnum)=translate_stmt(stmt, alloced_tmpvar_num + tmpnamec, symbols)?;
+        tmpnamec+=stmt_tmpnum;
+        intercodes.extend(stmt_codes);
+        // if stmt is definition, collect it
+        if stmt.stmttype==StatementType::Definition {
+            scope_vars.push(stmt.id.value.clone());
+        }
+    }
+    // push FREE to free ALLOCed local vars collected
+    for varname in scope_vars.iter() {
+        intercodes.push(IntermediateCode::free(varname));
+    }
+    intercodes.push(IntermediateCode::scope_end());
+    Some((intercodes, tmpnamec))
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SymbolType{
+    Variable,
+    Function,
+}
+#[derive(Debug, Clone)]
+struct Symbol{
+    name:String,
+    vartype:SymbolType,
+    global:bool,
+    modifiers:Vec<String>,
+    size:usize,
+    /// if local, address is offset from base pointer
+    /// if global, address is absolute address
+    address:usize,
+}
+impl Symbol {
+    pub fn new(name:String, vartype:SymbolType, global:bool, modifiers:Vec<String>, size:usize, address:usize)->Self{
+        Symbol{
+            name,
+            vartype,
+            global,
+            modifiers,
+            size,
+            address,
+        }
+    }
+}
+fn translate_function(funcnode:&FunctionNode,alloced_tmpvar_num: usize, symbols:&Vec<Symbol>)->Option<(Vec<IntermediateCode>,usize)>{
     let mut intercodes:Vec<IntermediateCode>=Vec::new();
     let statements=&funcnode.stmts;
     let mut tmpvarc=0;
+    // local symbol table
+    let mut local_symbols:Vec<Symbol>=symbols.clone();
     // TODO: determine return value size based on function return type
-    let retv_size="4".to_string();
+    let retv_size="8".to_string();
     //generate argument list string
     let arglist_str={
         let mut args=String::new();
@@ -160,7 +390,7 @@ fn translate_function(funcnode:&FunctionNode,alloced_tmpvar_num: usize)->Option<
             args.push_str(&paramid.value);
             args.push_str(":");
             // TODO: determine value size based on function return type
-            args.push_str("4");
+            args.push_str("8");
             if i!=funcnode.params.len()-1 {
                 args.push_str(",");
             }
@@ -169,17 +399,19 @@ fn translate_function(funcnode:&FunctionNode,alloced_tmpvar_num: usize)->Option<
     };
     // func definition code
     intercodes.push(IntermediateCode::new(IntermediateCodeType::FuncDef, vec![funcnode.id.value.clone(), retv_size, arglist_str]));
-    for stmt in statements {
-        let (stmt_codes, stmt_tmpnum)=translate_stmt(stmt, alloced_tmpvar_num)?;
-        tmpvarc+=stmt_tmpnum;
-        intercodes.extend(stmt_codes);
-    }
+    let (bodycodes, usedtmpvarc)=translate_scope(&funcnode.stmts, alloced_tmpvar_num+tmpvarc, &mut local_symbols)?;
+    intercodes.extend(bodycodes);
+
+    // insert an empty return to make sure the function can return
+    intercodes.push(IntermediateCode::new(IntermediateCodeType::Retemp, vec![]));
+    tmpvarc+=usedtmpvarc;
     Some((intercodes, tmpvarc))
 }
 pub fn generate_intermediate_code(ast:&ASTNode)->Option<Vec<IntermediateCode>>{
     let mut intercodes:Vec<IntermediateCode>=Vec::new();
+    let mut symbols:Vec<Symbol>=Vec::new();
     for funcnode in ast.functions.iter() {
-        let (func_codes, _func_tmpnum)=translate_function(funcnode, 0)?;
+        let (func_codes, _func_tmpnum)=translate_function(funcnode, 0, &symbols)?;
         intercodes.extend(func_codes);
     }
     Some(intercodes)
@@ -188,10 +420,19 @@ pub fn generate_intermediate_code(ast:&ASTNode)->Option<Vec<IntermediateCode>>{
 fn test_generate_itermediate_code(){
     let source="
     fn main():int{
-        int a=1;
-        int b=2;
-        int c=0;
+        let a=1;
+        let b=2;
+        let c=0;
         c=a+b;
+        if a==1 {
+            let d=11;
+            d=d+1;
+        }else if b==2{
+            let e=2;
+            let d=1;
+        }else{
+            let f=12;
+        }
     }
     ";
     let tokens=crate::lexer::do_lex(source);

@@ -11,7 +11,7 @@ pub fn generate_nasm(intercodes:&Vec<IntermediateCode>)->Option<String>{
             IntermediateCodeType::FuncDef=>{
                 nasmcode.push_str(&format!("global {}\n{}:\n", ic.operands[0], ic.operands[0]));
             },
-            IntermediateCodeType::Alloc=>{
+            IntermediateCodeType::AllocLocal=>{
                 // allocate space on stack
                 nasmcode.push_str(&format!("    sub rsp, {}\n", ic.operands[1]));
                 alloced_stack_size+=ic.operands[1].parse::<usize>().unwrap_or(0);

@@ -32,7 +32,7 @@ static ERRS:Mutex<ErrList>=Mutex::new(Vec::new());
 /// cry out an error and push it to the error list
 pub fn cry_err(sender:&str, err_msg:&str, line:usize, column:usize){
     push_err( sender, err_msg, line, column);
-    println!("Error from {} at (line {}, column {}): {}", sender, line, column, err_msg);
+    println!("[Error] from {} at (line {}, column {}): {}", sender, line, column, err_msg);
 }
 pub fn push_err(sender:&str, err_msg:&str, line:usize, column:usize){
     let err=CompilerError::new(sender, err_msg, line, column);

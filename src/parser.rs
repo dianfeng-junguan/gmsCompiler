@@ -331,7 +331,7 @@ fn scan_expr(tokens:&mut Peekable<slice::Iter<Token>>,precedence:usize)->Option<
             break;
         }.clone();
         if cfg!(test) {
-            println!("peeking token {:?}",righttoken);
+            // println!("peeking token {:?}",righttoken);
         }
         if PRECEDENCES.iter().find(|(toktyp,_)| *toktyp==&righttoken.kind).is_none() {
             // not an infix operator
@@ -451,7 +451,7 @@ impl ASTNode {
 fn scan_token(toktype:TokenType, tokens:&mut Peekable<slice::Iter<Token>>)->Option<Token>{
     if let Some(tok) = tokens.peek() {
         if cfg!(test) {
-            println!("peeking token {:?}, token type {}, required {}",tok, tok.kind, toktype);
+            println!("peeking token {:?}, hoping {}",tok, toktype);
         }
         if tok.kind==toktype {
             return tokens.next().cloned();
@@ -461,31 +461,79 @@ fn scan_token(toktype:TokenType, tokens:&mut Peekable<slice::Iter<Token>>)->Opti
 }
 /// scan a statement from the tokens.
 fn scan_stmt(tokens:&mut Peekable<slice::Iter<Token>>)->Option<StatementNode> {
+    // early stop if meet tokens not supposed to be a part of statement
+    if {
+        let tok=tokens.peek()?;
+        tok.kind==TokenType::Separator(SeparatorType::CloseBrace)||
+        tok.kind==TokenType::Separator(SeparatorType::OpenBrace)
+    } {
+        return None;
+    }
+
+
     //1. define
     // backup the iter in case the scanning fails
     let mut backupiter=tokens.clone();
     let typekw=scan_token(TokenType::Keyword(KeywordType::Let), &mut backupiter);
     let id=scan_token(TokenType::Identifier, &mut backupiter);
     let eqop=scan_token(TokenType::Operator(OperatorType::Assign), &mut backupiter);
-    let rexpr=scan_expr(&mut backupiter, 0);
-    let ending=scan_token(TokenType::Separator(SeparatorType::Semicolon), &mut backupiter);
-    if typekw.is_some()&&id.is_some()&&eqop.is_some()&&rexpr.is_some()&&ending.is_some() {
-        *tokens=backupiter;
-        return Some(StatementNode::new(StatementType::Definition, typekw.unwrap(), id.unwrap(), rexpr.unwrap()));
+    // checkpoint 
+    if typekw.is_some()&&id.is_some()&&eqop.is_some() {
+        let rexpr=scan_expr(&mut backupiter, 0);
+        let ending=scan_token(TokenType::Separator(SeparatorType::Semicolon), &mut backupiter);
+        if rexpr.is_some()&&ending.is_some() {
+            *tokens=backupiter;
+            return Some(StatementNode::new(StatementType::Definition, typekw.unwrap(), id.unwrap(), rexpr.unwrap()));
+        }
+    }
+
+    if cfg!(test) {
+        println!("definition scan failed, try assign...");
     }
 
     //2. assign
     let mut backupiter=tokens.clone();
     let id=scan_token(TokenType::Identifier, &mut backupiter);
     let eqop=scan_token(TokenType::Operator(OperatorType::Assign), &mut backupiter);
-    let rexpr=scan_expr(&mut backupiter, 0);
-    let ending=scan_token(TokenType::Separator(SeparatorType::Semicolon), &mut backupiter);
-    if id.is_some()&&eqop.is_some()&&rexpr.is_some()&&ending.is_some() {
-        *tokens=backupiter;
-        return Some(StatementNode::new(StatementType::Assign, Token::new(TokenType::Keyword(KeywordType::Int), ""), id.unwrap(), rexpr.unwrap()));
+    // checkpoint
+    if id.is_some()&&eqop.is_some() {
+        let rexpr=scan_expr(&mut backupiter, 0);
+        let ending=scan_token(TokenType::Separator(SeparatorType::Semicolon), &mut backupiter);
+        if rexpr.is_some()&&ending.is_some() {
+            *tokens=backupiter;
+            return Some(StatementNode::new(StatementType::Assign, Token::new(TokenType::Keyword(KeywordType::Int), ""), id.unwrap(), rexpr.unwrap()));
+        }
     }
 
-    //3. single expr
+    if cfg!(test) {
+        println!("assign scan failed, try if-elseif-else...");
+    }
+
+    //3. if-elseif-else
+    let mut backupiter=tokens.clone();
+    let ifnode=scan_if(&mut backupiter);
+    let elseifnodes={
+        let mut elseifnodes:Vec<ElseIfNode>=Vec::new();
+        loop {
+            let elseifnode=scan_elseif(&mut backupiter);
+            if elseifnode.is_none() {
+                break;
+            }
+            elseifnodes.push(elseifnode.unwrap());
+        }
+        elseifnodes
+    };
+    let elsenode=scan_else(&mut backupiter);
+    if ifnode.is_some() {
+        *tokens=backupiter;
+        return Some(StatementNode::new_if(ifnode.unwrap(), if elseifnodes.len()==0 {None} else {Some(elseifnodes)}, elsenode));
+    }
+
+    if cfg!(test) {
+        println!("if-elseif-else scan failed, try single expr...");
+    }
+
+    //4. single expr
     let mut backupiter=tokens.clone();
     let rexpr=scan_expr(&mut backupiter, 0);
     let ending=scan_token(TokenType::Separator(SeparatorType::Semicolon), &mut backupiter);
@@ -494,25 +542,7 @@ fn scan_stmt(tokens:&mut Peekable<slice::Iter<Token>>)->Option<StatementNode> {
         return Some(StatementNode::new(StatementType::SingleExpr, Token::new(TokenType::Keyword(KeywordType::Int), ""), Token::new(TokenType::Identifier, ""), rexpr.unwrap()));
     }
 
-    //4. if-elseif-else
-    let ifnode=scan_if(tokens);
-    let elseifnodes={
-        let mut elseifnodes:Vec<ElseIfNode>=Vec::new();
-        loop {
-            let elseifnode=scan_elseif(tokens);
-            if elseifnode.is_none() {
-                break;
-            }
-            elseifnodes.push(elseifnode.unwrap());
-        }
-        elseifnodes
-    };
-    let elsenode=scan_else(tokens);
-    if ifnode.is_some() {
-        *tokens=backupiter;
-        return Some(StatementNode::new_if(ifnode.unwrap(), if elseifnodes.len()==0 {None} else {Some(elseifnodes)}, elsenode));
-    }
-    cry_err(ERR_PARSER, "cannot parse the tokens as statement", 0, 0);
+    // cry_err(ERR_PARSER, "cannot parse the tokens as statement", 0, 0);
     None
 }
 fn scan_stmts(tokens:&mut Peekable<slice::Iter<Token>>)->Option<Vec<StatementNode>>{
@@ -527,7 +557,7 @@ fn scan_stmts(tokens:&mut Peekable<slice::Iter<Token>>)->Option<Vec<StatementNod
     Some(stmts)
 }
 #[derive(Clone, Debug)]
-struct IfNode{
+pub struct IfNode{
     pub ifkw:Token,
     pub condition:ExprNode,
     pub stmts:Vec<StatementNode>
@@ -542,7 +572,7 @@ impl IfNode {
     }
 }
 #[derive(Clone, Debug)]
-struct ElseIfNode{
+pub struct ElseIfNode{
     pub elseifkw:Token,
     pub condition:ExprNode,
     pub stmts:Vec<StatementNode>
@@ -557,7 +587,7 @@ impl ElseIfNode {
     }
 }
 #[derive(Clone, Debug)]
-struct ElseNode{
+pub struct ElseNode{
     pub elsekw:Token,
     pub stmts:Vec<StatementNode>
 }
@@ -616,12 +646,14 @@ fn scan_elseif(tokens:&mut Peekable<slice::Iter<Token>>)->Option<ElseIfNode>{
     let mut backupiter=tokens.clone();
     let elseifkw=scan_token(TokenType::Keyword(KeywordType::Else), &mut backupiter);
     let elseifkw=scan_token(TokenType::Keyword(KeywordType::If), &mut backupiter);
-    let condition_expr=scan_expr(&mut backupiter, 0);
-    let openbracetok=scan_token(TokenType::Separator(SeparatorType::OpenBrace), &mut backupiter);
     // checkpoint
     if elseifkw.is_none(){
         return None;
-    }else if condition_expr.is_none() {
+    }
+    let condition_expr=scan_expr(&mut backupiter, 0);
+    let openbracetok=scan_token(TokenType::Separator(SeparatorType::OpenBrace), &mut backupiter);
+    // checkpoint
+    if condition_expr.is_none() {
         //incomplete else if statement
         cry_err(ERR_PARSER, "incomplete else if statment: lack of condition", 0, 0);
         return None;
