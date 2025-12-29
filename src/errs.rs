@@ -8,6 +8,8 @@ use std::sync::Mutex;
 pub(crate) const ERR_LEXER:&str="Lexer Error";
 pub(crate) const ERR_PARSER:&str="Parser Error";
 pub(crate) const ERR_SEMATIC:&str="Sematic Error";
+pub(crate) const ERR_INTERCODER:&str="Intercode Generator Error";
+pub(crate) const ERR_NASMGEN:&str="Assembly Generator Error";
 pub(crate) type ErrList=Vec<CompilerError>;
 #[derive(Debug, Clone)]
 pub struct CompilerError{

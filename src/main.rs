@@ -5,12 +5,24 @@ pub mod intercode;
 pub mod asmgen;
 pub mod sematic;
 pub mod errs;
+pub mod defs;
 static TEMPLATE_CODE: &str = r#"
-fn main():int {
-    int a=1;
-    int b=2;
-    int c=a+b;
-}
+    fn main():int{
+        let a=1;
+        let b=2;
+        let c=0;
+        c=a+b;
+        if a==1 {
+            let d=11;
+            d=d+1;
+        }else if b==2{
+            let e=2;
+            let d=1;
+        }else{
+            let f=12;
+        }
+        printf(c);
+    }
     "#;
 fn main() {
     //词法分析

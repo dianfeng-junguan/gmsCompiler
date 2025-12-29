@@ -1,6 +1,6 @@
-use std::{collections::BTreeMap, sync::Mutex};
+use std::{collections::BTreeMap, fmt::Debug, ops, sync::Mutex, vec};
 
-use crate::{errs::cry_err, parser::{ASTNode, ExprNode, ExprNodeType, FunctionNode, StatementNode, StatementType}};
+use crate::{defs::get_vartype_size, errs::{ERR_INTERCODER, cry_err}, parser::{ASTNode, ExprNode, ExprNodeType, FunctionNode, StatementNode, StatementType}};
 
 /*
     specifices of intermediate code
@@ -56,15 +56,26 @@ pub enum IntermediateCodeType {
     Jmp,
     Label,
     FuncCall,
+    StoreRetValue,
     PropertyVisit,
     Retemp,
     Ret,
     FuncDef
 }
-#[derive(Debug, Clone)]
+
+#[derive(Clone)]
 pub struct IntermediateCode {
     pub code_type: IntermediateCodeType,
     pub operands: Vec<String>,
+}
+impl Debug for IntermediateCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&format!("{:?} ", self.code_type))?;
+        for ops in &self.operands {
+            f.write_str(&format!("{},", ops))?;
+        }
+        Ok(())
+    }
 }
 impl IntermediateCode {
     pub fn new(code_type: IntermediateCodeType, operands: Vec<String>) -> Self {
@@ -136,6 +147,29 @@ impl IntermediateCode {
             operands:vec![label.to_string()],
         }
     }
+    
+    // non-static methods
+
+    pub fn get_funccall_args(&self)->Option<Vec<(String, usize)>>{
+        if self.code_type!=IntermediateCodeType::FuncCall {
+            return None;
+        }
+        if self.operands.len()<2 {
+            return None;
+        }
+        let arglist_str=&self.operands[1];
+        let mut args:Vec<(String, usize)>=vec![];
+        if arglist_str.is_empty() {
+            return Some(args);
+        }
+        let argpairs:Vec<&str>=arglist_str.split(",").collect();
+        for argpair in argpairs {
+            let parts:Vec<&str>=argpair.split(":").collect();
+            args.push((parts[0].to_string(), 8));
+            
+        }
+        Some(args)
+    }
 }
 /// translate an expression node to intermediate code
 /// return None if translation fails
@@ -155,9 +189,108 @@ fn translate_expr(exprnode:&ExprNode, alloced_tmpvar_num: usize)->Option<(Vec<In
             // no extra intercode and directly return the value
             return Some((vec![], exprnode.value.clone().unwrap(), 0));
         },
-        ExprNodeType::ADD|ExprNodeType::SUB|ExprNodeType::MUL|
-        ExprNodeType::DIV|ExprNodeType::FUNCCALL|
+        ExprNodeType::COMMALIST=>{
+            /*
+                for commalist, we:
+                1. translate left node
+                2. free left node temp var if any
+                3. translate right node
+                4. return the right node tempvar
+             */
+            let leftnode=exprnode.left.as_ref().unwrap();
+            let rightnode=exprnode.right.as_ref().unwrap();
+
+            let (left_codes, left_var, _)=translate_expr(leftnode, alloced_tmpvar_num + tmpnamec)?;
+            intercodes.extend(left_codes);
+            // free left node temp var
+            intercodes.push(IntermediateCode::free(&left_var));
+            // calc right node
+            let (right_codes, right_var, right_tmpnum)=translate_expr(rightnode, alloced_tmpvar_num + tmpnamec)?;
+            tmpnamec+=right_tmpnum;
+            intercodes.extend(right_codes);
+            return Some((intercodes, right_var, tmpnamec));
+        },
+        ExprNodeType::FUNCCALL=>{
+            let leftnode=exprnode.left.as_ref().unwrap();
+            let arglistnode=exprnode.right.as_ref().unwrap();
+            // translate function addr
+            let (funcaddr_codes, funcaddr_var, allocated_tmpvarnum)=translate_expr(leftnode, alloced_tmpvar_num + tmpnamec)?;
+            intercodes.extend(funcaddr_codes);
+            // translate arg list
+            let mut arg_vars:Vec<String>=vec![];
+            let mut tovisit=vec![arglistnode.as_ref()];
+            while !tovisit.is_empty() {
+                let current=tovisit.pop().unwrap();
+                if current.nodetype==ExprNodeType::COMMALIST {
+                    let left=current.left.as_ref().unwrap();
+                    let right=current.right.as_ref().unwrap();
+                    tovisit.push(right.as_ref());
+                    tovisit.push(left.as_ref());
+                }else if current.nodetype==ExprNodeType::VALUE {
+                    let arg_var=current.value.clone().expect(format!("{}: met VALUE node without value in func call arg list", ERR_INTERCODER).as_str());
+                    arg_vars.push(arg_var);
+                }else{
+                    cry_err("Intermediate Code Generator", "met unknown expr node type in func call arg list", 0, 0);
+                    return None;
+                }
+            }
+            // make the final func call code
+            let mut funccall_oprands:Vec<String>=vec![funcaddr_var.clone()];
+            funccall_oprands.extend(arg_vars);
+            intercodes.push(IntermediateCode::new(IntermediateCodeType::FuncCall, funccall_oprands));
+            // now free the func addr temp var
+            if allocated_tmpvarnum>0 {
+                // this is an calculated func addr, free it
+                intercodes.push(IntermediateCode::free(&funcaddr_var));
+            }
+            // allocate a temp var to store the return value
+            let tmp_var_name=format!("tmp{}", alloced_tmpvar_num + tmpnamec);
+            intercodes.push(IntermediateCode::alloc_temp(&tmp_var_name, 8));
+            tmpnamec+=1;
+            // move the return value to the temp var
+            intercodes.push(IntermediateCode::new(IntermediateCodeType::StoreRetValue,vec![tmp_var_name.clone()]));
+            return Some((intercodes, tmp_var_name, tmpnamec));
+        },
         ExprNodeType::EQUAL=>{
+            let leftnode=exprnode.left.as_ref().unwrap();
+            let rightnode=exprnode.right.as_ref().unwrap();
+            let (left_codes, left_var, _)=translate_expr(leftnode, alloced_tmpvar_num + tmpnamec)?;
+            // the sub expr is supposed to free it's subexpr's tmp var so it should only generate one temp var to store the result
+            tmpnamec+=1;
+            intercodes.extend(left_codes);
+            let (right_codes, right_var, _)=translate_expr(rightnode, alloced_tmpvar_num + tmpnamec)?;
+            tmpnamec+=1;
+            intercodes.extend(right_codes);
+            // now generate a new temporary variable to store the result
+            let var_cmpres=format!("tmp{}", alloced_tmpvar_num + tmpnamec);
+            intercodes.push(IntermediateCode::alloc_temp(&var_cmpres, 8));
+            tmpnamec+=1;
+            intercodes.push(IntermediateCode::new(IntermediateCodeType::Mov, vec![var_cmpres.clone(), left_var.clone()]));
+
+            // we compare the two by subtracting right from left and checking if the result is 0
+            intercodes.push(IntermediateCode::new(IntermediateCodeType::Sub, vec![var_cmpres.clone(),right_var.clone()]));
+            intercodes.push(IntermediateCode::compare(&var_cmpres, "0"));
+            // je
+            let eqzero=format!("eqzero{}", alloc_global_id());
+            intercodes.push(IntermediateCode::je(&eqzero));
+            // not equal path: set tmp_var_name to 1
+            intercodes.push(IntermediateCode::new(IntermediateCodeType::Mov, vec![var_cmpres.clone(), "1".to_string()]));
+            // jmp to end
+            let endlabel=format!("endeq{}", alloc_global_id());
+            intercodes.push(IntermediateCode::jmp(&endlabel));
+            // equal path: set tmp_var_name to 0
+            intercodes.push(IntermediateCode::label(&eqzero));
+            intercodes.push(IntermediateCode::new(IntermediateCodeType::Mov, vec![var_cmpres.clone(), "0".to_string()]));
+            // end label
+            intercodes.push(IntermediateCode::label(&endlabel));
+            // free left var and right var
+            intercodes.push(IntermediateCode::free(&left_var));
+            intercodes.push(IntermediateCode::free(&right_var));
+            tmpnamec-=2;
+            return Some((intercodes, var_cmpres, tmpnamec));
+        },
+        ExprNodeType::ADD|ExprNodeType::SUB|ExprNodeType::MUL|
+        ExprNodeType::DIV=>{
             // two-operand node need to translate left and right nodes
             let leftnode=exprnode.left.as_ref().unwrap();
             let rightnode=exprnode.right.as_ref().unwrap();
@@ -181,7 +314,6 @@ fn translate_expr(exprnode:&ExprNode, alloced_tmpvar_num: usize)->Option<(Vec<In
                 ExprNodeType::DIV=>IntermediateCodeType::Div,
                 ExprNodeType::FUNCCALL=>IntermediateCodeType::FuncCall,
                 ExprNodeType::PROPERTYVISIT=>IntermediateCodeType::PropertyVisit,
-                ExprNodeType::EQUAL=>IntermediateCodeType::Cmp,
                 _=>return None,// should not reach here
             };
             intercodes.push(IntermediateCode::new(op_type, vec![tmp_var_name.clone(), right_var.clone()]));
@@ -348,20 +480,20 @@ fn translate_scope(stmts:&Vec<StatementNode>, alloced_tmpvar_num: usize, symbols
     Some((intercodes, tmpnamec))
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SymbolType{
+pub enum SymbolType{
     Variable,
     Function,
 }
 #[derive(Debug, Clone)]
-struct Symbol{
-    name:String,
-    vartype:SymbolType,
-    global:bool,
-    modifiers:Vec<String>,
-    size:usize,
+pub struct Symbol{
+    pub name:String,
+    pub vartype:SymbolType,
+    pub global:bool,
+    pub modifiers:Vec<String>,
+    pub size:usize,
     /// if local, address is offset from base pointer
     /// if global, address is absolute address
-    address:usize,
+    pub address:usize,
 }
 impl Symbol {
     pub fn new(name:String, vartype:SymbolType, global:bool, modifiers:Vec<String>, size:usize, address:usize)->Self{
