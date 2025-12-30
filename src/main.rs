@@ -22,6 +22,7 @@ static TEMPLATE_CODE: &str = r#"
             let f=12;
         }
         printf(c);
+        return 0;
     }
     "#;
 fn main() {

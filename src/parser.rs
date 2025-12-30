@@ -487,8 +487,26 @@ fn scan_stmt(tokens:&mut Peekable<slice::Iter<Token>>)->Option<StatementNode> {
         }
     }
 
+    
     if cfg!(test) {
-        println!("definition scan failed, try assign...");
+        println!("definition scan failed, try return...");
+    }
+
+
+    // return 
+    let mut backupiter=tokens.clone();
+    let returnkw=scan_token(TokenType::Keyword(KeywordType::Return), &mut backupiter);
+    if returnkw.is_some() {
+        let rexpr=scan_expr(&mut backupiter, 0);
+        let ending=scan_token(TokenType::Separator(SeparatorType::Semicolon), &mut backupiter);
+        if rexpr.is_some()&&ending.is_some() {
+            *tokens=backupiter;
+            return Some(StatementNode::new(StatementType::Return, returnkw.unwrap(), Token::new(TokenType::Identifier, ""), rexpr.unwrap()));
+        }else if rexpr.is_none()&&ending.is_some() {
+            // empty return
+            *tokens=backupiter;
+            return Some(StatementNode::new(StatementType::Return, returnkw.unwrap(), Token::new(TokenType::Identifier, ""), ExprNode::empty()));
+        }
     }
 
     //2. assign

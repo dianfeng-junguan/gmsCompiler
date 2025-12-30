@@ -122,7 +122,7 @@ fn genasm_scope(intercodes:&mut slice::Iter<IntermediateCode>, symbols:&mut Symb
                 nasmcode.push_str(&format!("    push rdx\n    push rax\n    xor rdx, rdx\n    mov rax, {}\n    div {}\n    mov {}, rax\n    pop rax\n    pop rdx\n", ic.operands[0], ic.operands[1], ic.operands[0]));
             },
             IntermediateCodeType::Ret=>{
-                nasmcode.push_str(&format!("    mov rax, {}\n    mov rsp,rbp\n    pop rbp\n    ret\n", ic.operands[1]));
+                nasmcode.push_str(&format!("    mov rax, {}\n    mov rsp,rbp\n    pop rbp\n    ret\n", ic.operands[0]));
             },
             IntermediateCodeType::Retemp=>{
                 nasmcode.push_str(&format!("    mov rsp,rbp\n    pop rbp\n    ret\n"));

@@ -445,6 +445,19 @@ fn translate_stmt(stmt:&StatementNode, alloced_tmpvar_num: usize, symbols:&mut V
                 intercodes.extend(elsecode);
             }
             return Some((intercodes, tmpnamec));
+        },
+        StatementType::Return=>{
+            // translate the expression
+            let (expr_codes, expr_var, expr_tmpnum)=translate_expr(&stmt.expr, alloced_tmpvar_num + tmpnamec)?;
+            tmpnamec+=expr_tmpnum;
+            intercodes.extend(expr_codes);
+            // generate ret code
+            intercodes.push(IntermediateCode::new(IntermediateCodeType::Ret, vec![expr_var.clone()]));
+            // free the temporary variables used in expression
+            if stmt.expr.nodetype!=ExprNodeType::VALUE {
+                intercodes.push(IntermediateCode::free(&expr_var));
+            }
+            return Some((intercodes, tmpnamec));
         }
         _=>{}
     }
@@ -463,19 +476,33 @@ fn translate_scope(stmts:&Vec<StatementNode>, alloced_tmpvar_num: usize, symbols
     let mut intercodes:Vec<IntermediateCode>=Vec::new();
     intercodes.push(IntermediateCode::scope_start());
     let mut scope_vars=vec![];
+    let mut free_position=0;
+    // first collect local var defs in the scope to prepare free local code
+    // in case we have return. we need to free locals before returning
+
     for stmt in stmts {
-        let (stmt_codes, stmt_tmpnum)=translate_stmt(stmt, alloced_tmpvar_num + tmpnamec, symbols)?;
-        tmpnamec+=stmt_tmpnum;
-        intercodes.extend(stmt_codes);
         // if stmt is definition, collect it
         if stmt.stmttype==StatementType::Definition {
             scope_vars.push(stmt.id.value.clone());
         }
     }
+    let mut free_intercodes=vec![];
     // push FREE to free ALLOCed local vars collected
     for varname in scope_vars.iter() {
-        intercodes.push(IntermediateCode::free(varname));
+        free_intercodes.push(IntermediateCode::free(varname));
     }
+
+    for stmt in stmts {
+        let (stmt_codes, stmt_tmpnum)=translate_stmt(stmt, alloced_tmpvar_num + tmpnamec, symbols)?;
+        tmpnamec+=stmt_tmpnum;
+        if stmt.stmttype==StatementType::Return {
+            // insert local-freeing code first
+            intercodes.extend(free_intercodes.clone());
+        }
+        intercodes.extend(stmt_codes);
+    }
+    // insert local-freeing code at the end of the scope
+    intercodes.extend(free_intercodes.clone());
     intercodes.push(IntermediateCode::scope_end());
     Some((intercodes, tmpnamec))
 }
