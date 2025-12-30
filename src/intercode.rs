@@ -274,7 +274,7 @@ fn translate_expr(exprnode:&ExprNode, alloced_tmpvar_num: usize)->Option<(Vec<In
                 intercodes.push(IntermediateCode::free(&funcaddr_var));
             }
             // allocate a temp var to store the return value
-            let tmp_var_name=format!("tmp{}", alloced_tmpvar_num + tmpnamec);
+            let tmp_var_name=format!("__tmp__{}", alloced_tmpvar_num + tmpnamec);
             intercodes.push(IntermediateCode::alloc_temp(&tmp_var_name, 8));
             tmpnamec+=1;
             // move the return value to the temp var
@@ -293,7 +293,7 @@ fn translate_expr(exprnode:&ExprNode, alloced_tmpvar_num: usize)->Option<(Vec<In
             tmpnamec+=righttmpvarnum;
             intercodes.extend(right_codes);
             // now generate a new temporary variable to store the result
-            let var_cmpres=format!("tmp{}", alloced_tmpvar_num + tmpnamec);
+            let var_cmpres=format!("__tmp__{}", alloced_tmpvar_num + tmpnamec);
             intercodes.push(IntermediateCode::alloc_temp(&var_cmpres, 8));
             tmpnamec+=1;
             intercodes.push(IntermediateCode::new(IntermediateCodeType::Mov, vec![var_cmpres.clone(), left_var.clone()]));
@@ -302,7 +302,7 @@ fn translate_expr(exprnode:&ExprNode, alloced_tmpvar_num: usize)->Option<(Vec<In
             intercodes.push(IntermediateCode::new(IntermediateCodeType::Sub, vec![var_cmpres.clone(),right_var.clone()]));
             intercodes.push(IntermediateCode::compare(&var_cmpres, "0"));
             // je
-            let eqzero=format!("eqzero{}", alloc_global_id());
+            let eqzero=format!(".eqzero{}", alloc_global_id());
             intercodes.push(match exprnode.nodetype {
                 ExprNodeType::EQUAL=>IntermediateCode::je(&eqzero),
                 ExprNodeType::GT=>IntermediateCode::jna(&eqzero),
@@ -317,7 +317,7 @@ fn translate_expr(exprnode:&ExprNode, alloced_tmpvar_num: usize)->Option<(Vec<In
             // not equal path: set tmp_var_name to 1
             intercodes.push(IntermediateCode::new(IntermediateCodeType::Mov, vec![var_cmpres.clone(), "1".to_string()]));
             // jmp to end
-            let endlabel=format!("endeq{}", alloc_global_id());
+            let endlabel=format!(".endeq{}", alloc_global_id());
             intercodes.push(IntermediateCode::jmp(&endlabel));
             // equal path: set tmp_var_name to 0
             intercodes.push(IntermediateCode::label(&eqzero));
@@ -348,7 +348,7 @@ fn translate_expr(exprnode:&ExprNode, alloced_tmpvar_num: usize)->Option<(Vec<In
             tmpnamec+=1;
             intercodes.extend(right_codes);
             // now generate a new temporary variable to store the result
-            let tmp_var_name=format!("tmp{}", alloced_tmpvar_num + tmpnamec);
+            let tmp_var_name=format!("__tmp__{}", alloced_tmpvar_num + tmpnamec);
             intercodes.push(IntermediateCode::alloc_temp(&tmp_var_name, 8));
             tmpnamec+=1;
             intercodes.push(IntermediateCode::new(IntermediateCodeType::Mov, vec![tmp_var_name.clone(),left_var.clone()]));
@@ -458,7 +458,7 @@ fn translate_stmt(stmt:&StatementNode, alloced_tmpvar_num: usize, symbols:&mut V
             // free condition expr temp var
             intercodes.push(IntermediateCode::free(&condexprvarname));
             // jump if equal to 0 (false)
-            let ifcond_false_label=format!("else{}",alloc_global_id());
+            let ifcond_false_label=format!(".else{}",alloc_global_id());
             intercodes.push(IntermediateCode::je(&ifcond_false_label));
             // now put the if body
             let (ifcode,_)= translate_scope(&ifnode.stmts, alloced_tmpvar_num, symbols)?;
@@ -476,7 +476,7 @@ fn translate_stmt(stmt:&StatementNode, alloced_tmpvar_num: usize, symbols:&mut V
                     // free tmpvar
                     intercodes.push(IntermediateCode::free(&elif_condvar));
                     // je
-                    let elseif_false_label=format!("else{}",alloc_global_id());
+                    let elseif_false_label=format!(".else{}",alloc_global_id());
                     intercodes.push(IntermediateCode::je(&elseif_false_label));
                     // put the body
                     let (elseifcode,_)=translate_scope(&elifnode.stmts, alloced_tmpvar_num, symbols)?;
@@ -510,7 +510,7 @@ fn translate_stmt(stmt:&StatementNode, alloced_tmpvar_num: usize, symbols:&mut V
             let (condcode, condexprvarname, _)=translate_expr(&stmt.expr, alloced_tmpvar_num)?;
             // put the while start label for repeating
             // each loop we calc the expr value and check if it's 0
-            let whilestart_label=format!("whilestart{}",alloc_global_id());
+            let whilestart_label=format!(".whilestart{}",alloc_global_id());
             intercodes.push(IntermediateCode::label(&whilestart_label));
             // condition expr code
             intercodes.extend(condcode);
@@ -519,7 +519,7 @@ fn translate_stmt(stmt:&StatementNode, alloced_tmpvar_num: usize, symbols:&mut V
             // free condition expr temp var
             intercodes.push(IntermediateCode::free(&condexprvarname));
             // jump if equal to 0 (false)
-            let whilecond_false_label=format!("whilend{}",alloc_global_id());
+            let whilecond_false_label=format!(".whilend{}",alloc_global_id());
             intercodes.push(IntermediateCode::je(&whilecond_false_label));
             // now put the while body
             let (whilecode,_)= translate_scope(&stmt.body, alloced_tmpvar_num, symbols)?;
