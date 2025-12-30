@@ -21,6 +21,10 @@ static TEMPLATE_CODE: &str = r#"
         }else{
             let f=12;
         }
+        let i=0;
+        while i<10 {
+            i=i+1;
+        }
         printf(c);
         return 0;
     }

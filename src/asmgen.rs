@@ -139,6 +139,12 @@ fn genasm_scope(intercodes:&mut slice::Iter<IntermediateCode>, symbols:&mut Symb
             IntermediateCodeType::Jb=>{
                 nasmcode.push_str(&format!("    jb {}\n", ic.operands[0]));
             },
+            IntermediateCodeType::Jna=>{
+                nasmcode.push_str(&format!("    jna {}\n", ic.operands[0]));
+            },
+            IntermediateCodeType::Jnb=>{
+                nasmcode.push_str(&format!("    jnb {}\n", ic.operands[0]));
+            },
             IntermediateCodeType::Jmp=>{
                 nasmcode.push_str(&format!("    jmp {}\n", ic.operands[0]));
             },

@@ -375,9 +375,9 @@ pub struct StatementNode{
     //if else area
     pub ifnode:Option<IfNode>,
     pub elseifnodes:Option<Vec<ElseIfNode>>,
-    pub elsenode:Option<ElseNode>
+    pub elsenode:Option<ElseNode>,
     // while area
-
+    pub body:Vec<StatementNode>
 }
 impl StatementNode {
     pub const fn new(stmttype:StatementType,typekw:Token,id:Token,expr:ExprNode)->Self{
@@ -389,6 +389,7 @@ impl StatementNode {
             ifnode: None,
             elseifnodes: None,
             elsenode: None,
+            body: vec![],
         }
     }
     pub fn new_if(ifnode:IfNode,elseifnodes:Option<Vec<ElseIfNode>>,elsenode:Option<ElseNode>)->Self{
@@ -400,6 +401,19 @@ impl StatementNode {
             ifnode: Some(ifnode),
             elseifnodes: elseifnodes,
             elsenode: elsenode,
+            body: vec![],
+        }
+    }
+    pub fn new_while(condition:ExprNode, body:Vec<StatementNode>)->Self{
+        Self{
+            stmttype:StatementType::While,
+            typekw: Token::new(TokenType::Keyword(KeywordType::While), "while"),
+            id: Token::new(TokenType::Identifier, ""),
+            expr: condition,
+            ifnode: None,
+            elseifnodes: None,
+            elsenode: None,
+            body,
         }
     }
 }
@@ -550,7 +564,32 @@ fn scan_stmt(tokens:&mut Peekable<slice::Iter<Token>>)->Option<StatementNode> {
     if cfg!(test) {
         println!("if-elseif-else scan failed, try single expr...");
     }
-
+    // while
+    let mut backupiter=tokens.clone();
+    let whiletok=scan_token(TokenType::Keyword(KeywordType::While), &mut backupiter);
+    if whiletok.is_some() {
+        let condition_expr=scan_expr(&mut backupiter, 0);
+        let openbracetok=scan_token(TokenType::Separator(SeparatorType::OpenBrace), &mut backupiter);
+        // checkpoint
+        if condition_expr.is_none() {
+            //incomplete while statement
+            cry_err(ERR_PARSER, "incomplete while statment: lack of condition", 0, 0);
+            return None;
+        }else if openbracetok.is_none() {
+            cry_err(ERR_PARSER, "incomplete while statment: lacking '{'", 0, 0);
+            return None;
+        }
+        // scan the stmts
+        let stmts=scan_stmts(&mut backupiter).unwrap();
+        let closebracetok=scan_token(TokenType::Separator(SeparatorType::CloseBrace), &mut backupiter);
+        //checkpoint
+        if closebracetok.is_none() {
+            cry_err(ERR_PARSER, "incomplete while statement: lacking }", 0, 0);
+            return None;
+        }
+        *tokens=backupiter;
+        return Some(StatementNode::new_while(condition_expr.unwrap(), stmts));
+    }
     //4. single expr
     let mut backupiter=tokens.clone();
     let rexpr=scan_expr(&mut backupiter, 0);

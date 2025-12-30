@@ -53,6 +53,8 @@ pub enum IntermediateCodeType {
     Je,
     Ja,
     Jb,
+    Jna,
+    Jnb,
     Jmp,
     Label,
     FuncCall,
@@ -141,6 +143,34 @@ impl IntermediateCode {
         }
     }
 
+
+    pub fn ja(label:&str)->Self{
+        IntermediateCode{
+            code_type:IntermediateCodeType::Ja,
+            operands:vec![label.to_string()],
+        }
+    }
+
+    pub fn jb(label:&str)->Self{
+        IntermediateCode{
+            code_type:IntermediateCodeType::Jb,
+            operands:vec![label.to_string()],
+        }
+    }
+
+    pub fn jna(label:&str)->Self{
+        IntermediateCode{
+            code_type:IntermediateCodeType::Jna,
+            operands:vec![label.to_string()],
+        }
+    }
+
+    pub fn jnb(label:&str)->Self{
+        IntermediateCode{
+            code_type:IntermediateCodeType::Jnb,
+            operands:vec![label.to_string()],
+        }
+    }
     pub fn jmp(label:&str)->Self{
         IntermediateCode{
             code_type:IntermediateCodeType::Jmp,
@@ -230,7 +260,7 @@ fn translate_expr(exprnode:&ExprNode, alloced_tmpvar_num: usize)->Option<(Vec<In
                     let arg_var=current.value.clone().expect(format!("{}: met VALUE node without value in func call arg list", ERR_INTERCODER).as_str());
                     arg_vars.push(arg_var);
                 }else{
-                    cry_err("Intermediate Code Generator", "met unknown expr node type in func call arg list", 0, 0);
+                    cry_err(ERR_INTERCODER, "met unknown expr node type in func call arg list", 0, 0);
                     return None;
                 }
             }
@@ -251,15 +281,16 @@ fn translate_expr(exprnode:&ExprNode, alloced_tmpvar_num: usize)->Option<(Vec<In
             intercodes.push(IntermediateCode::new(IntermediateCodeType::StoreRetValue,vec![tmp_var_name.clone()]));
             return Some((intercodes, tmp_var_name, tmpnamec));
         },
-        ExprNodeType::EQUAL=>{
+        ExprNodeType::EQUAL|ExprNodeType::GT|ExprNodeType::LT|ExprNodeType::GE|
+        ExprNodeType::LE=>{
             let leftnode=exprnode.left.as_ref().unwrap();
             let rightnode=exprnode.right.as_ref().unwrap();
-            let (left_codes, left_var, _)=translate_expr(leftnode, alloced_tmpvar_num + tmpnamec)?;
+            let (left_codes, left_var, lefttmpvarnum)=translate_expr(leftnode, alloced_tmpvar_num + tmpnamec)?;
             // the sub expr is supposed to free it's subexpr's tmp var so it should only generate one temp var to store the result
-            tmpnamec+=1;
+            tmpnamec+=lefttmpvarnum;
             intercodes.extend(left_codes);
-            let (right_codes, right_var, _)=translate_expr(rightnode, alloced_tmpvar_num + tmpnamec)?;
-            tmpnamec+=1;
+            let (right_codes, right_var, righttmpvarnum)=translate_expr(rightnode, alloced_tmpvar_num + tmpnamec)?;
+            tmpnamec+=righttmpvarnum;
             intercodes.extend(right_codes);
             // now generate a new temporary variable to store the result
             let var_cmpres=format!("tmp{}", alloced_tmpvar_num + tmpnamec);
@@ -272,7 +303,17 @@ fn translate_expr(exprnode:&ExprNode, alloced_tmpvar_num: usize)->Option<(Vec<In
             intercodes.push(IntermediateCode::compare(&var_cmpres, "0"));
             // je
             let eqzero=format!("eqzero{}", alloc_global_id());
-            intercodes.push(IntermediateCode::je(&eqzero));
+            intercodes.push(match exprnode.nodetype {
+                ExprNodeType::EQUAL=>IntermediateCode::je(&eqzero),
+                ExprNodeType::GT=>IntermediateCode::jna(&eqzero),
+                ExprNodeType::LT=>IntermediateCode::jnb(&eqzero),
+                ExprNodeType::GE=>IntermediateCode::jb(&eqzero),
+                ExprNodeType::LE=>IntermediateCode::ja(&eqzero),
+                _=>{
+                    cry_err(ERR_INTERCODER, "met unknown comparation operator", 0, 0);
+                    return None;
+                }
+            });
             // not equal path: set tmp_var_name to 1
             intercodes.push(IntermediateCode::new(IntermediateCodeType::Mov, vec![var_cmpres.clone(), "1".to_string()]));
             // jmp to end
@@ -284,9 +325,14 @@ fn translate_expr(exprnode:&ExprNode, alloced_tmpvar_num: usize)->Option<(Vec<In
             // end label
             intercodes.push(IntermediateCode::label(&endlabel));
             // free left var and right var
-            intercodes.push(IntermediateCode::free(&left_var));
-            intercodes.push(IntermediateCode::free(&right_var));
-            tmpnamec-=2;
+            if leftnode.nodetype!=ExprNodeType::VALUE {
+                intercodes.push(IntermediateCode::free(&left_var));
+                tmpnamec-=1;
+            }
+            if rightnode.nodetype!=ExprNodeType::VALUE {
+                intercodes.push(IntermediateCode::free(&right_var));
+                tmpnamec-=1;
+            }
             return Some((intercodes, var_cmpres, tmpnamec));
         },
         ExprNodeType::ADD|ExprNodeType::SUB|ExprNodeType::MUL|
@@ -458,6 +504,32 @@ fn translate_stmt(stmt:&StatementNode, alloced_tmpvar_num: usize, symbols:&mut V
                 intercodes.push(IntermediateCode::free(&expr_var));
             }
             return Some((intercodes, tmpnamec));
+        },
+        StatementType::While=>{
+            // similar to if 
+            let (condcode, condexprvarname, _)=translate_expr(&stmt.expr, alloced_tmpvar_num)?;
+            // put the while start label for repeating
+            // each loop we calc the expr value and check if it's 0
+            let whilestart_label=format!("whilestart{}",alloc_global_id());
+            intercodes.push(IntermediateCode::label(&whilestart_label));
+            // condition expr code
+            intercodes.extend(condcode);
+            // compare with 0
+            intercodes.push(IntermediateCode::compare(&condexprvarname, "0"));
+            // free condition expr temp var
+            intercodes.push(IntermediateCode::free(&condexprvarname));
+            // jump if equal to 0 (false)
+            let whilecond_false_label=format!("whilend{}",alloc_global_id());
+            intercodes.push(IntermediateCode::je(&whilecond_false_label));
+            // now put the while body
+            let (whilecode,_)= translate_scope(&stmt.body, alloced_tmpvar_num, symbols)?;
+            intercodes.extend(whilecode);
+            // jmp back to start
+            intercodes.push(IntermediateCode::jmp(&whilestart_label));
+            // here comes the "if" not true part
+            intercodes.push(IntermediateCode::label(&whilecond_false_label));
+
+            return Some((intercodes,tmpnamec));
         }
         _=>{}
     }
@@ -476,7 +548,6 @@ fn translate_scope(stmts:&Vec<StatementNode>, alloced_tmpvar_num: usize, symbols
     let mut intercodes:Vec<IntermediateCode>=Vec::new();
     intercodes.push(IntermediateCode::scope_start());
     let mut scope_vars=vec![];
-    let mut free_position=0;
     // first collect local var defs in the scope to prepare free local code
     // in case we have return. we need to free locals before returning
 
